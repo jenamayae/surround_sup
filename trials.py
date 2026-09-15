@@ -90,7 +90,6 @@ def build_condition_order(condition_counts, max_consecutive):
 
 def generate_block_trials(
     block_definition,
-    block_index,
     refresh_hz,
     shuffle=True,
 ):
@@ -99,19 +98,11 @@ def generate_block_trials(
     for condition_row in condition_event_code_rows:
         for _ in range(block_definition["trials_per_condition"]):
             trial = build_base_trial(condition_row, refresh_hz)
-            trial.update(
-                {
-                    "block_name": block_definition["block_name"],
-                    "block_index": block_index,
-                }
-            )
+            trial["block_name"] = block_definition["block_name"]
             block_trials.append(trial)
 
     if shuffle:
         block_trials = shuffle_with_condition_run_limit(block_trials)
-
-    for trial_index_within_block, trial in enumerate(block_trials, start=1):
-        trial["trial_index_within_block"] = trial_index_within_block
 
     return block_trials
 
@@ -122,14 +113,10 @@ def generate_trials(
 ):
     trials = []
 
-    for block_index, block_definition in enumerate(
-        block_definitions,
-        start=1,
-    ):
+    for block_definition in block_definitions:
         trials.extend(
             generate_block_trials(
                 block_definition=block_definition,
-                block_index=block_index,
                 refresh_hz=refresh_hz,
                 shuffle=shuffle,
             )

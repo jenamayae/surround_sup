@@ -4,9 +4,10 @@ from psychopy.tools.coordinatetools import pol2cart
 simulate_labjack = True
 
 # --- display ---
-monitor_name = "asus_oled"
-monitor_pixels = [2560, 1440]
-fallback_refresh_hz = 120.0
+monitor_name = "dell_p2426h" #"asus_oled"
+screen_index = 1
+monitor_pixels = [1920, 1080] #[2560, 1440]
+refresh_hz = 120
 monitor_width_cm = 58
 viewing_distance_cm = 60
 fullscreen = True
@@ -19,7 +20,7 @@ surround_flicker_hz = 7.5
 
 # --- centers ---
 center_diameter_deg = 2
-center_holes_diameter_deg = center_diameter_deg + 2
+center_holes_diameter_deg = center_diameter_deg + 1
 center_sf = 1.0
 
 center_layout_deg = {  # eccentricity: [angles]
@@ -76,7 +77,7 @@ photocell_box_pos_deg = (27, -15.0)
 
 # --- trials ---
 trial_duration_s = 10.6667
-iti_duration_s = 6
+iti_duration_s = 2
 
 task_instruction_text = (
     "Maintain fixation on the white cross in the center of the screen.\n\n"
@@ -90,7 +91,7 @@ task_instruction_text = (
 block_definitions = [
     {
         "block_name": "ssvep_task",
-        "trials_per_condition": 20,
+        "trials_per_condition": 10,
     },
 ]
 
@@ -125,7 +126,7 @@ condition_event_code_rows = [
     {"condition_id": 1, "center_orientation": 45,  "surround_orientation": None},
     {"condition_id": 2, "center_orientation": 45,  "surround_orientation": 45},
     {"condition_id": 3, "center_orientation": 45,  "surround_orientation": 135},
-    {"condition_id": 4, "center_orientation": 135, "surround_orientation": None},
-    {"condition_id": 5, "center_orientation": 135, "surround_orientation": 45},
-    {"condition_id": 6, "center_orientation": 135, "surround_orientation": 135},
+#    {"condition_id": 4, "center_orientation": 135, "surround_orientation": None},
+#    {"condition_id": 5, "center_orientation": 135, "surround_orientation": 45},
+#    {"condition_id": 6, "center_orientation": 135, "surround_orientation": 135},
 ]

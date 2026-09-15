@@ -20,13 +20,14 @@ from config import (
 
 QUEST_INTENSITY_VALS = np.geomspace(0.02, 0.2, num=13).tolist()
 # ~ [0.20, 0.17, 0.14, 0.11, 0.093, 0.077, 0.063, 0.052, 0.043, 0.036, 0.029, 0.024, 0.020]
+QUEST_THRESHOLD_VALS = np.geomspace(0.01, 0.5, num=25).tolist()
 
 QUEST_CONFIG = {
     "intensity_vals": QUEST_INTENSITY_VALS,
-    "threshold_vals": QUEST_INTENSITY_VALS,
+    "threshold_vals": QUEST_THRESHOLD_VALS,
     "slope_vals": [2],
     "lower_asymptote_vals": [0.25],
-    "lapse_rate_vals": [0.05],
+    "lapse_rate_vals": [0.02],
     "response_vals": ["Correct", "Incorrect"],
     "start_intensity": QUEST_INTENSITY_VALS[-1],
     "psychometric_func": "weibull",
@@ -210,6 +211,8 @@ class QuestPlusController:
             stimSelectionOptions=dict(quest_config["stim_selection_options"]),
             paramEstimationMethod=quest_config["param_estimation_method"],
         )
+        # StairHandler defaults this unused snapshot label to "2AFC".
+        self.handler.method = "4AFC"
 
     def select_next_target_contrast(self):
         return float(next(self.handler))

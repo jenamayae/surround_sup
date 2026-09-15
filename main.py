@@ -1,23 +1,21 @@
 from datetime import datetime
+import json
 from pathlib import Path
 
 from psychopy import core, data, event, gui, visual
 
 from config import (
-    block_definitions,
     center_change_count_per_trial,
     center_change_duration_sign_reversals,
     center_contrast,
     center_diameter_deg,
     center_flicker_hz,
-    center_positions_deg,
     center_sf,
     condition_event_code_rows,
     contrast_change_interval_s,
     contrast_change_start_s,
     contrast_response_keys,
     contrast_task_eligible_eccentricities,
-    fallback_refresh_hz,
     fixation_red_duration_s,
     frame_marker_code,
     frame_marker_interval,
@@ -26,8 +24,8 @@ from config import (
     monitor_name,
     monitor_pixels,
     monitor_width_cm,
-    photocell_box_pos_deg,
-    photocell_box_size_deg,
+    refresh_hz,
+    screen_index,
     simulate_labjack,
     stimulus_offset_code,
     surround_contrast,
@@ -63,26 +61,16 @@ from task import (
 from trials import generate_trials
 
 
-def get_refresh_hz(win, fallback_hz=fallback_refresh_hz):
-    hz = win.getActualFrameRate(
-        nIdentical=20,
-        nMaxFrames=200,
-        nWarmUpFrames=20,
-        threshold=1,
-    )
-    return fallback_hz if hz is None else hz
-
-
 def setup_display():
     win = make_window(
         size=monitor_pixels,
         fullscr=fullscreen,
+        screen=screen_index,
         monitor_name=monitor_name,
         monitor_width_cm=monitor_width_cm,
         viewing_distance_cm=viewing_distance_cm,
     )
     stims = make_stimuli(win)
-    refresh_hz = get_refresh_hz(win)
     return win, stims, refresh_hz
 
 
@@ -102,7 +90,7 @@ def prepare_run_paths(exp_info):
         "rawdata_dir": rawdata_dir,
         "metadata_dir": metadata_dir,
         "derivatives_dir": derivatives_dir,
-        "session_info_path": metadata_dir / f"session_info_run-{run_id}.yaml",
+        "session_info_path": metadata_dir / f"session_info_run-{run_id}.json",
         "trial_conditions_path": metadata_dir / f"trial_conditions_run-{run_id}",
     }
 
@@ -146,29 +134,8 @@ def collect_exp_info():
     }
 
 
-def write_session_info_yaml(path, session_info):
-    lines = []
-
-    def yaml_value(value):
-        return value.value if hasattr(value, "value") else value
-
-    for section_name, section_values in session_info.items():
-        lines.append(f"{section_name}:")
-        for key, value in section_values.items():
-            if isinstance(value, dict):
-                lines.append(f"  {key}:")
-                for nested_key, nested_value in value.items():
-                    if isinstance(nested_value, dict):
-                        lines.append(f"    {nested_key}:")
-                        for inner_key, inner_value in nested_value.items():
-                            lines.append(f"      {inner_key}: {yaml_value(inner_value)}")
-                    else:
-                        lines.append(f"    {nested_key}: {yaml_value(nested_value)}")
-            else:
-                lines.append(f"  {key}: {yaml_value(value)}")
-        lines.append("")
-
-    path.write_text("\n".join(lines) + "\n")
+def write_session_info_json(path, session_info):
+    path.write_text(json.dumps(session_info, indent=2) + "\n")
 
 
 def make_session_info(exp_info, datetime_start, refresh_hz):
@@ -183,10 +150,7 @@ def make_session_info(exp_info, datetime_start, refresh_hz):
         },
         "stim configs": {
             "center_flicker_hz": center_flicker_hz,
-            "photocell_box_size_deg": photocell_box_size_deg,
-            "photocell_box_pos_deg": photocell_box_pos_deg,
             "surround_flicker_hz": surround_flicker_hz,
-            "center_positions_deg": center_positions_deg,
             "center_diameter_deg": center_diameter_deg,
             "center_sf": center_sf,
             "surround_diameter_deg": surround_diameter_deg,
@@ -195,12 +159,6 @@ def make_session_info(exp_info, datetime_start, refresh_hz):
         "trial configs": {
             "trial_duration_s": trial_duration_s,
             "iti_duration_s": iti_duration_s,
-            "block_definitions": {
-                block_definition["block_name"]: {
-                    "trials_per_condition": block_definition["trials_per_condition"],
-                }
-                for block_definition in block_definitions
-            },
             "center_contrast": center_contrast,
             "surround_contrast": surround_contrast,
             "contrast_task_eligible_eccentricities": contrast_task_eligible_eccentricities,
@@ -210,7 +168,8 @@ def make_session_info(exp_info, datetime_start, refresh_hz):
             "center_change_duration_sign_reversals": center_change_duration_sign_reversals,
             "center_change_duration_aligned_s": center_change_duration_aligned_s(),
             "fixation_red_duration_s": fixation_red_duration_s,
-            "contrast_response_keys": contrast_response_keys,
+        },
+        "quest configs": {
             "quest_intensity_definition": "absolute_target_contrast",
             "quest_intensity_vals": QUEST_CONFIG["intensity_vals"],
             "quest_threshold_vals": QUEST_CONFIG["threshold_vals"],
@@ -251,7 +210,7 @@ def make_experiment_handler(exp_info, run_paths):
         name="surround_suppression_stimuli",
         extraInfo=dict(exp_info),
         dataFileName=str(run_paths["trial_conditions_path"]),
-        saveWideText=True,
+        saveWideText=False,
         savePickle=False,
     )
 
@@ -274,20 +233,24 @@ def make_quest_controllers():
 
 
 def save_questplus_handlers(quest_controllers, run_paths, run_id):
+    condition_snapshots = {}
     for condition_id, quest_controller in sorted(quest_controllers.items()):
-        path = (
-            run_paths["metadata_dir"]
-            / f"questplus_condition-{condition_id:02d}_run-{run_id}.json"
+        serialized_handler = quest_controller.handler.saveAsJson(fileName=None)
+        condition_snapshots[f"condition_{condition_id:02d}"] = json.loads(
+            serialized_handler.lstrip("\ufeff")
         )
-        quest_controller.handler.saveAsJson(
-            fileName=str(path),
-            fileCollisionMethod="overwrite",
-        )
+
+    path = run_paths["metadata_dir"] / f"questplus_run-{run_id}.json"
+    snapshot = {
+        "run_id": str(run_id),
+        "conditions": condition_snapshots,
+    }
+    path.write_text(json.dumps(snapshot, indent=2) + "\n")
 
 
 def show_message(win, text, key_list=None):
     event.clearEvents(eventType="keyboard")
-    msg = visual.TextStim(win=win, text=text)
+    msg = visual.TextStim(win=win, text=text, alignText="left")
     msg.draw()
     win.flip()
     key_list = ["space", "escape"] if key_list is None else key_list
@@ -312,6 +275,7 @@ def pause_experiment(win):
     msg = visual.TextStim(
         win=win,
         text="Experiment paused.\nPress P or SPACE to resume.\nPress ESC to quit.",
+        alignText="left",
     )
 
     while True:
@@ -419,7 +383,10 @@ def finalize_elapsed_events(frame_num, events, event_index, quest_controller):
                 response_quadrant=event_info["response_quadrant"],
             )
 
-        if event_info["target_contrast"] is not None:
+        if (
+            event_info["target_contrast"] is not None
+            and event_info["outcome"] != "no_response"
+        ):
             quest_controller.update(
                 event_info["target_contrast"],
                 correct=(event_info["outcome"] == "hit"),
@@ -447,19 +414,6 @@ def record_response(frame_num, response_key, events, event_index, quest_controll
     return event_index
 
 
-def finalize_trial_logs(trial, events):
-    trial["contrast_event_1_onset_frame"] = events[0]["onset_frame"]
-    trial["contrast_event_target_quadrants_log"] = format_log_list(
-        [event_info["target_quadrant"] for event_info in events]
-    )
-    trial["contrast_task_outcomes"] = format_log_list(
-        [event_info["outcome"] for event_info in events]
-    )
-    trial["presented_target_contrasts"] = format_log_list(
-        [event_info["target_contrast"] for event_info in events]
-    )
-
-
 def schedule_trial_start_on_flip(trigger_dispatcher, trial, frame_num, trial_num=None):
     send_trial_start_codes(
         trigger_dispatcher,
@@ -483,12 +437,10 @@ def run_trial(
     trial,
     trial_duration_s,
     refresh_hz,
-    global_frame_num,
     quest_controller,
     trigger_dispatcher=None,
     trial_num=None,
 ):
-    trial_start_frame_global = global_frame_num
     n_frames = round(trial_duration_s * refresh_hz)
     trial_events = build_trial_events(trial, n_frames, refresh_hz)
     response_event_index = 0
@@ -581,7 +533,6 @@ def run_trial(
                 trial_num,
             )
         win.flip()
-        global_frame_num += 1
 
         response_key = get_task_response()
         if response_key is not None:
@@ -596,7 +547,6 @@ def run_trial(
         handle_runtime_keys(win)
 
     finalize_elapsed_events(n_frames, trial_events, response_event_index, quest_controller)
-    trial_end_frame_global = global_frame_num
     if trigger_dispatcher is not None:
         send_stimulus_offset(
             trigger_dispatcher,
@@ -604,11 +554,10 @@ def run_trial(
             trial_num=trial_num,
         )
 
-    finalize_trial_logs(trial, trial_events)
-    return global_frame_num, trial_start_frame_global, trial_end_frame_global
+    return trial_events
 
 
-def run_iti(win, stims, iti_duration_s, refresh_hz, global_frame_num):
+def run_iti(win, stims, iti_duration_s, refresh_hz):
     n_frames = round(iti_duration_s * refresh_hz)
 
     event.clearEvents(eventType="keyboard")
@@ -618,35 +567,38 @@ def run_iti(win, stims, iti_duration_s, refresh_hz, global_frame_num):
         stims["fixation"].draw()
 
         win.flip()
-        global_frame_num += 1
 
         handle_runtime_keys(win)
 
-    return global_frame_num
 
-
-def log_trial(exp, trial_num, trial, trial_start_frame_global, trial_end_frame_global, refresh_hz):
+def log_trial(
+    exp,
+    trial_num,
+    trial,
+    events,
+    quest_estimated_threshold,
+):
     surround_present = trial["surround_orientation"] is not None
 
     row = {
         "trial_num": trial_num,
         "block_name": trial["block_name"],
-        "block_index": trial["block_index"],
-        "trial_index_within_block": trial["trial_index_within_block"],
         "condition_id": trial["condition_id"],
-        "refresh_hz": refresh_hz,
-        "trial_start_frame_global": trial_start_frame_global,
-        "trial_end_frame_global": trial_end_frame_global,
         "center_orientation": trial["center_orientation"],
         "center_contrast": trial["center_contrast"],
         "surround_present": surround_present,
         "surround_orientation": trial["surround_orientation"] if surround_present else "N/A",
         "surround_contrast": trial["surround_contrast"] if surround_present else "N/A",
-        "contrast_event_1_onset_frame": trial["contrast_event_1_onset_frame"],
-        "contrast_event_target_quadrants": trial["contrast_event_target_quadrants_log"],
-        "contrast_task_outcomes": trial["contrast_task_outcomes"],
-        "presented_target_contrasts": trial["presented_target_contrasts"],
-        "quest_estimated_threshold": trial["quest_estimated_threshold"],
+        "contrast_task_outcomes": format_log_list(
+            [event_info["outcome"] for event_info in events]
+        ),
+        "contrast_task_no_response_count": sum(
+            event_info["outcome"] == "no_response" for event_info in events
+        ),
+        "presented_target_contrasts": format_log_list(
+            [event_info["target_contrast"] for event_info in events]
+        ),
+        "quest_estimated_threshold": quest_estimated_threshold,
     }
 
     for key, value in row.items():
@@ -667,7 +619,6 @@ def run_experiment_trials(
     trigger_dispatcher,
     quest_controllers,
 ):
-    global_frame_num = 0
     current_block_name = None
     trials = generate_trials(refresh_hz=refresh_hz)
 
@@ -677,33 +628,29 @@ def run_experiment_trials(
             current_block_name = trial["block_name"]
 
         quest_controller = quest_controllers[trial["condition_id"]]
-        global_frame_num, trial_start_frame_global, trial_end_frame_global = run_trial(
+        trial_events = run_trial(
             win=win,
             stims=stims,
             trial=trial,
             trial_duration_s=trial_duration_s,
             refresh_hz=refresh_hz,
-            global_frame_num=global_frame_num,
             quest_controller=quest_controller,
             trigger_dispatcher=trigger_dispatcher,
             trial_num=trial_num,
         )
-        trial["quest_estimated_threshold"] = quest_controller.estimated_threshold()
-        global_frame_num = run_iti(
+        run_iti(
             win=win,
             stims=stims,
             iti_duration_s=iti_duration_s,
             refresh_hz=refresh_hz,
-            global_frame_num=global_frame_num,
         )
 
         log_trial(
             exp=exp,
             trial_num=trial_num,
             trial=trial,
-            trial_start_frame_global=trial_start_frame_global,
-            trial_end_frame_global=trial_end_frame_global,
-            refresh_hz=refresh_hz,
+            events=trial_events,
+            quest_estimated_threshold=quest_controller.estimated_threshold(),
         )
 
 
@@ -723,7 +670,7 @@ def main():
         datetime_start,
         refresh_hz,
     )
-    write_session_info_yaml(run_paths["session_info_path"], session_info)
+    write_session_info_json(run_paths["session_info_path"], session_info)
 
     trigger_backend = None
     trigger_dispatcher = None

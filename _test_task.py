@@ -1,7 +1,9 @@
-from pathlib import Path
 from collections import Counter
+import json
 import math
+from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -110,8 +112,30 @@ install_psychopy_stubs()
 import main
 import stimuli
 from hardware import BaseTrigger, TriggerDispatcher
-from task import build_event_frame_lists
+from task import QUEST_CONFIG, QuestPlusController, build_event_frame_lists
 from trials import generate_trials
+
+
+class DisplaySetupTests(unittest.TestCase):
+    def test_setup_display_uses_configured_120_hz(self):
+        win = object()
+        stims = object()
+
+        with patch.object(main, "make_window", return_value=win) as make_window, patch.object(
+            main, "make_stimuli", return_value=stims
+        ):
+            result = main.setup_display()
+
+        self.assertEqual(result, (win, stims, 120.0))
+        self.assertEqual(make_window.call_args.kwargs["screen"], 1)
+
+
+class QuestPlusConfigurationTests(unittest.TestCase):
+    def test_snapshot_method_matches_four_choice_guessing_rate(self):
+        controller = QuestPlusController()
+
+        self.assertEqual(controller.handler.method, "4AFC")
+        self.assertEqual(QUEST_CONFIG["lower_asymptote_vals"], [0.25])
 
 
 class ContrastEventSchedulerTests(unittest.TestCase):
@@ -309,7 +333,7 @@ class ContrastResponseScoringTests(unittest.TestCase):
 
         self.assertEqual(event_info["target_contrast"], 0.08)
 
-    def test_wrong_quadrant_and_no_response_are_incorrect_for_quest(self):
+    def test_wrong_quadrant_updates_quest_but_no_response_does_not(self):
         quest_controller = DummyQuestController()
         events = [
             {
@@ -342,39 +366,11 @@ class ContrastResponseScoringTests(unittest.TestCase):
             [event["outcome"] for event in events],
             ["miss", "no_response"],
         )
-        self.assertEqual(quest_controller.updates, [(0.08, False), (0.1, False)])
+        self.assertEqual(quest_controller.updates, [(0.08, False)])
 
 
 class TrialLoggingTests(unittest.TestCase):
-    def test_finalize_trial_logs_records_presented_target_contrasts(self):
-        trial = {}
-        events = [
-            {
-                "onset_frame": 10,
-                "target_quadrant": "upper_left",
-                "outcome": "hit",
-                "target_contrast": 0.2,
-            },
-            {
-                "onset_frame": 30,
-                "target_quadrant": "lower_right",
-                "outcome": "miss",
-                "target_contrast": 0.05,
-            },
-        ]
-
-        main.finalize_trial_logs(trial, events)
-
-        self.assertEqual(trial["contrast_event_1_onset_frame"], 10)
-        self.assertEqual(
-            trial["contrast_event_target_quadrants_log"],
-            "[upper_left; lower_right]",
-        )
-        self.assertEqual(trial["contrast_task_outcomes"], "[hit; miss]")
-        self.assertEqual(trial["presented_target_contrasts"], "[0.2; 0.05]")
-        self.assertNotIn("presented_contrast_decrements", trial)
-
-    def test_trial_row_preserves_task_and_marker_fields_without_e_stim(self):
+    def test_log_trial_builds_complete_row_from_events_without_mutating_trial(self):
         class RecordingExperiment:
             def __init__(self):
                 self.row = {}
@@ -387,27 +383,115 @@ class TrialLoggingTests(unittest.TestCase):
                 self.entry_count += 1
 
         trial = generate_trials(refresh_hz=120, shuffle=False)[0]
-        trial.update({
-            "contrast_event_1_onset_frame": trial["contrast_event_onset_frames"][0],
-            "contrast_event_target_quadrants_log": "[upper_left]",
-            "contrast_task_outcomes": "[hit]",
-            "presented_target_contrasts": "[0.1]",
-            "quest_estimated_threshold": 0.1,
-        })
+        original_trial = dict(trial)
+        events = [
+            {
+                "onset_frame": 10,
+                "target_quadrant": "upper_left",
+                "outcome": "hit",
+                "target_contrast": 0.2,
+            },
+            {
+                "onset_frame": 30,
+                "target_quadrant": "lower_right",
+                "outcome": "no_response",
+                "target_contrast": 0.05,
+            },
+        ]
         exp = RecordingExperiment()
 
-        main.log_trial(exp, 1, trial, 0, 1280, 120)
+        main.log_trial(
+            exp=exp,
+            trial_num=1,
+            trial=trial,
+            events=events,
+            quest_estimated_threshold=0.1,
+        )
 
         self.assertEqual(exp.entry_count, 1)
         self.assertEqual(exp.row["block_name"], "ssvep_task")
         self.assertEqual(exp.row["condition_id"], trial["condition_id"])
-        self.assertEqual(exp.row["presented_target_contrasts"], "[0.1]")
-        self.assertEqual(exp.row["trial_end_frame_global"], 1280)
+        self.assertEqual(exp.row["contrast_task_outcomes"], "[hit; no_response]")
+        self.assertEqual(exp.row["contrast_task_no_response_count"], 1)
+        self.assertEqual(exp.row["presented_target_contrasts"], "[0.2; 0.05]")
+        self.assertEqual(exp.row["quest_estimated_threshold"], 0.1)
+        self.assertEqual(trial, original_trial)
+        removed_fields = {
+            "block_index",
+            "trial_index_within_block",
+            "refresh_hz",
+            "trial_start_frame_global",
+            "trial_end_frame_global",
+            "contrast_event_1_onset_frame",
+            "contrast_event_target_quadrants",
+        }
+        self.assertTrue(removed_fields.isdisjoint(exp.row))
         self.assertFalse(any("e_stim" in key or "cs_plus" in key for key in exp.row))
         self.assertFalse(any(key.startswith("iti_tilt_") for key in exp.row))
 
 
 class SessionMetadataTests(unittest.TestCase):
+    def test_quest_handlers_are_saved_in_one_run_file(self):
+        class FakeHandler:
+            def __init__(self, condition_id):
+                self.condition_id = condition_id
+                self.calls = []
+
+            def saveAsJson(self, fileName=None):
+                self.calls.append(fileName)
+                return json.dumps(
+                    {
+                        "__instance_type__": ["psychopy.data.staircase", "QuestPlusHandler"],
+                        "attributes": {"condition_id": self.condition_id},
+                    }
+                )
+
+        handlers = {condition_id: FakeHandler(condition_id) for condition_id in (1, 2)}
+        controllers = {
+            condition_id: types.SimpleNamespace(handler=handler)
+            for condition_id, handler in handlers.items()
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            metadata_dir = Path(temp_dir)
+            main.save_questplus_handlers(
+                quest_controllers=controllers,
+                run_paths={"metadata_dir": metadata_dir},
+                run_id="003",
+            )
+            saved_paths = list(metadata_dir.iterdir())
+            snapshot = json.loads(saved_paths[0].read_text())
+
+        self.assertEqual([path.name for path in saved_paths], ["questplus_run-003.json"])
+        self.assertEqual(snapshot["run_id"], "003")
+        self.assertEqual(
+            list(snapshot["conditions"]),
+            ["condition_01", "condition_02"],
+        )
+        self.assertEqual(
+            snapshot["conditions"]["condition_02"]["attributes"]["condition_id"],
+            2,
+        )
+        self.assertTrue(all(handler.calls == [None] for handler in handlers.values()))
+
+    def test_experiment_handler_disables_automatic_csv_save(self):
+        handler = types.SimpleNamespace(dataNames=[])
+        run_paths = {"trial_conditions_path": Path("trial_conditions_run-001")}
+
+        with patch.object(
+            main.data,
+            "ExperimentHandler",
+            return_value=handler,
+            create=True,
+        ) as experiment_handler:
+            result = main.make_experiment_handler(
+                {"subject": "subj", "session": "001", "run": "001"},
+                run_paths,
+            )
+
+        self.assertIs(result, handler)
+        self.assertFalse(experiment_handler.call_args.kwargs["saveWideText"])
+
     def test_collect_exp_info_uses_one_dialog_without_voltage(self):
         with patch.object(main.gui, "DlgFromDict", return_value=types.SimpleNamespace(OK=True), create=True) as dialog, patch.object(
             main, "get_next_run_id", return_value="002"
@@ -417,7 +501,7 @@ class SessionMetadataTests(unittest.TestCase):
         dialog.assert_called_once()
         self.assertEqual(exp_info, {"subject": "", "session": "001", "run": "002"})
 
-    def test_make_session_info_records_one_task_block_without_conditioning(self):
+    def test_make_session_info_groups_quest_config_separately(self):
         exp_info = {
             "subject": "subj",
             "session": "001",
@@ -431,17 +515,33 @@ class SessionMetadataTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            session_info["trial configs"]["block_definitions"],
-            {"ssvep_task": {"trials_per_condition": 20}},
-        )
-        self.assertEqual(
-            session_info["trial configs"]["quest_intensity_definition"],
+            session_info["quest configs"]["quest_intensity_definition"],
             "absolute_target_contrast",
         )
+        self.assertTrue(session_info["quest configs"])
+        self.assertTrue(
+            all(key.startswith("quest_") for key in session_info["quest configs"])
+        )
+        self.assertFalse(
+            any(key.startswith("quest_") for key in session_info["trial configs"])
+        )
+        self.assertNotIn("photocell_box_size_deg", session_info["stim configs"])
+        self.assertNotIn("photocell_box_pos_deg", session_info["stim configs"])
+        self.assertNotIn("center_positions_deg", session_info["stim configs"])
+        self.assertNotIn("block_definitions", session_info["trial configs"])
+        self.assertNotIn("contrast_response_keys", session_info["trial configs"])
         self.assertNotIn("e_stim", session_info)
         self.assertNotIn("e_stim_trigger_code", session_info["events"])
         self.assertNotIn("cs_plus_center_orientation", session_info["trial configs"])
         self.assertFalse(any("iti_tilt" in key or "show_iti" in key for key in session_info["trial configs"]))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "session_info_run-001.json"
+            main.write_session_info_json(path, session_info)
+            saved_info = json.loads(path.read_text())
+
+        self.assertEqual(saved_info["participant"], session_info["participant"])
+        self.assertEqual(saved_info["quest configs"], session_info["quest configs"])
 
 
 class TrialGenerationTests(unittest.TestCase):
@@ -451,7 +551,8 @@ class TrialGenerationTests(unittest.TestCase):
         self.assertEqual(len(trials), 120)
         self.assertEqual(Counter(trial["condition_id"] for trial in trials), {i: 20 for i in range(1, 7)})
         self.assertEqual({trial["block_name"] for trial in trials}, {"ssvep_task"})
-        self.assertEqual([trial["trial_index_within_block"] for trial in trials], list(range(1, 121)))
+        self.assertTrue(all("block_index" not in trial for trial in trials))
+        self.assertTrue(all("trial_index_within_block" not in trial for trial in trials))
         self.assertTrue(all("e_stim_scheduled" not in trial for trial in trials))
         self.assertTrue(all(
             len({trial["condition_id"] for trial in trials[index:index + 3]}) > 1
@@ -484,15 +585,14 @@ class InterTrialIntervalTests(unittest.TestCase):
         with patch.object(main.event, "clearEvents", create=True), patch.object(
             main, "handle_runtime_keys"
         ):
-            next_frame = main.run_iti(
+            result = main.run_iti(
                 win=win,
                 stims=stims,
                 iti_duration_s=0.5,
                 refresh_hz=8,
-                global_frame_num=10,
             )
 
-        self.assertEqual(next_frame, 14)
+        self.assertIsNone(result)
         self.assertEqual(stims["fixation"].draw_count, 4)
         self.assertEqual(stims["fixation"].color, "white")
         self.assertTrue(all(
@@ -548,21 +648,19 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
             main, "get_task_response", return_value=None
         ), patch.object(
             main, "handle_runtime_keys"
-        ), patch.object(
-            main, "finalize_trial_logs"
         ):
-            main.run_trial(
+            result = main.run_trial(
                 win=win,
                 stims={},
                 trial=trial,
                 trial_duration_s=81,
                 refresh_hz=1,
-                global_frame_num=0,
                 quest_controller=DummyQuestController(),
                 trigger_dispatcher=dispatcher,
                 trial_num=4,
             )
 
+        self.assertEqual(result, [])
         self.assertEqual(
             [entry[0] for entry in event_log[:6]],
             ["scheduled", "flip", "trigger_submit", "flip", "flip", "flip"],

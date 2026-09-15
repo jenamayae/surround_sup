@@ -32,6 +32,7 @@ def flicker_indicator_contrast_from_phase(center_phase):
 def make_window(
     size,
     fullscr,
+    screen,
     monitor_name,
     monitor_width_cm,
     viewing_distance_cm,
@@ -44,6 +45,7 @@ def make_window(
     return visual.Window(
         size=size,
         fullscr=fullscr,
+        screen=screen,
         monitor=mon,
         units=units,
         color=bg_color,

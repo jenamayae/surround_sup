@@ -14,8 +14,9 @@ data/
       rawdata/
         sub-<id>_ses-<id>_run-<id>_eeg.cnt
       metadata/
-        session_info_run-<id>.yaml          # session metadata
+        session_info_run-<id>.json          # session metadata
         trial_conditions_run-<id>.csv               # trial structure  
+        questplus_run-<id>.json             # all condition-specific QUEST+ states
       derivatives/              # analysis outputs (fft, snr, plots)
 ```
 
