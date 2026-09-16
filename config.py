@@ -6,7 +6,7 @@ simulate_labjack = True
 # --- display ---
 monitor_name = "dell_p2426h" #"asus_oled"
 screen_index = 1
-monitor_pixels = [1920, 1080] #[2560, 1440]
+monitor_pixels = [2560, 1440]
 refresh_hz = 120
 monitor_width_cm = 58
 viewing_distance_cm = 60
