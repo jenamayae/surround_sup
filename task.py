@@ -18,8 +18,8 @@ from config import (
     fixation_red_duration_s,
 )
 
-QUEST_INTENSITY_VALS = np.geomspace(0.005, 0.05, num=13).tolist()
-QUEST_THRESHOLD_VALS = np.geomspace(0.001, 0.1, num=25).tolist()
+QUEST_INTENSITY_VALS = np.geomspace(0.005, 0.1, num=13).tolist()
+QUEST_THRESHOLD_VALS = np.geomspace(0.003, 0.13, num=25).tolist()
 
 QUEST_CONFIG = {
     "intensity_vals": QUEST_INTENSITY_VALS,
