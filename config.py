@@ -65,7 +65,7 @@ surround_diameter_deg = 28
 surround_sf = 1.0
 
 # --- contrasts ---
-center_contrast = 0.2
+center_contrast = 0.05
 surround_contrast = 1.0
 
 # --- mask ---
@@ -100,7 +100,7 @@ contrast_task_eligible_eccentricities = [7.1]
 contrast_change_start_s = 1
 contrast_change_interval_s = 1.7
 center_change_count_per_trial = 6
-center_change_duration_sign_reversals = 2
+center_change_duration_sign_reversals = 1
 fixation_red_duration_s = 0.333
 contrast_response_keys = {
     "upper_left": "7",

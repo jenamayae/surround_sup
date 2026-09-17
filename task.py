@@ -18,9 +18,8 @@ from config import (
     fixation_red_duration_s,
 )
 
-QUEST_INTENSITY_VALS = np.geomspace(0.02, 0.2, num=13).tolist()
-# ~ [0.20, 0.17, 0.14, 0.11, 0.093, 0.077, 0.063, 0.052, 0.043, 0.036, 0.029, 0.024, 0.020]
-QUEST_THRESHOLD_VALS = np.geomspace(0.01, 0.5, num=25).tolist()
+QUEST_INTENSITY_VALS = np.geomspace(0.005, 0.05, num=13).tolist()
+QUEST_THRESHOLD_VALS = np.geomspace(0.001, 0.1, num=25).tolist()
 
 QUEST_CONFIG = {
     "intensity_vals": QUEST_INTENSITY_VALS,
@@ -32,8 +31,8 @@ QUEST_CONFIG = {
     "start_intensity": QUEST_INTENSITY_VALS[-1],
     "psychometric_func": "weibull",
     "stim_scale": "linear",
-    "stim_selection_method": "minEntropy",
-    "stim_selection_options": {},
+    "stim_selection_method": "minNEntropy",
+    "stim_selection_options": {"N": 3, "maxConsecutiveReps": 2},
     "param_estimation_method": "mean",
 }
 

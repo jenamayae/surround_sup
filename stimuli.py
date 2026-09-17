@@ -49,6 +49,7 @@ def make_window(
         monitor=mon,
         units=units,
         color=bg_color,
+        bpc=(10, 10, 10),
     )
 
 
