@@ -18,6 +18,14 @@ units = "deg"
 center_flicker_hz = 6
 surround_flicker_hz = 7.5
 
+def frames_per_reversal(refresh_hz, flicker_hz):
+    frames = refresh_hz / flicker_hz
+    if not float(frames).is_integer():
+        raise ValueError(
+            f"refresh_hz / flicker_hz must be an integer, got {refresh_hz} / {flicker_hz} = {frames}"
+        )
+    return int(frames)
+
 # --- centers ---
 center_diameter_deg = 2
 center_holes_diameter_deg = center_diameter_deg + 1
@@ -118,6 +126,8 @@ labjack_fio_mask = 0xFF
 trigger_pulse_width_s = 0.005
 trigger_min_gap_s = 0.005
 frame_marker_interval = 80
+assert frame_marker_interval % frames_per_reversal(refresh_hz, center_flicker_hz) == 0
+assert frame_marker_interval % frames_per_reversal(refresh_hz, surround_flicker_hz) == 0
 
 # --- event codes ---
 frame_marker_code = 20

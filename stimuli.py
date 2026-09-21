@@ -8,6 +8,7 @@ from config import (
     center_holes_diameter_deg,
     center_positions_deg,
     center_sf,
+    frames_per_reversal,
     photocell_box_pos_deg,
     photocell_box_size_deg,
     raised_cos_fringe,
@@ -21,7 +22,7 @@ from config import (
 
 
 def phase_reversal(frame_num, refresh_hz, flicker_hz):
-    cycle_index = int(frame_num * flicker_hz / refresh_hz)
+    cycle_index = frame_num // frames_per_reversal(refresh_hz, flicker_hz)
     return 0.25 if cycle_index % 2 == 0 else 0.75
 
 

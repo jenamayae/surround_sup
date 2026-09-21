@@ -16,6 +16,7 @@ from config import (
     contrast_response_keys,
     contrast_task_eligible_eccentricities,
     fixation_red_duration_s,
+    frames_per_reversal,
 )
 
 QUEST_INTENSITY_VALS = np.geomspace(0.005, 0.1, num=13).tolist()
@@ -70,12 +71,7 @@ def center_change_duration_aligned_s(
 
 
 def is_sign_reversal_frame(frame_num, refresh_hz, flicker_hz=center_flicker_hz):
-    if frame_num <= 0:
-        return False
-
-    previous_cycle_index = int((frame_num - 1) * flicker_hz / refresh_hz)
-    current_cycle_index = int(frame_num * flicker_hz / refresh_hz)
-    return current_cycle_index != previous_cycle_index
+    return frame_num > 0 and frame_num % frames_per_reversal(refresh_hz, flicker_hz) == 0
 
 
 def next_sign_reversal_frame(frame_num, refresh_hz, flicker_hz=center_flicker_hz):
