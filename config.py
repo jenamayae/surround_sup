@@ -118,7 +118,7 @@ contrast_response_keys = {
 }
 # --- hardware ---
 labjack_device_type = "T7"
-labjack_connection_type = "ANY"
+labjack_connection_type = "USB"
 labjack_identifier = "ANY"
 labjack_fio_lines = [f"FIO{i}" for i in range(8)]
 labjack_fio_mask = 0xFF
@@ -130,8 +130,8 @@ assert frame_marker_interval % frames_per_reversal(refresh_hz, center_flicker_hz
 assert frame_marker_interval % frames_per_reversal(refresh_hz, surround_flicker_hz) == 0
 
 # --- event codes ---
-frame_marker_code = 20
-stimulus_offset_code = 21
+frame_marker_code = 8
+stimulus_offset_code = 16
 condition_event_code_rows = [
     {"condition_id": 1, "center_orientation": 45,  "surround_orientation": None},
     {"condition_id": 2, "center_orientation": 45,  "surround_orientation": 45},
