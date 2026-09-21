@@ -528,15 +528,19 @@ def run_trial(
     return trial_events
 
 
-def run_iti(win, stims, iti_duration_s, refresh_hz):
+def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
     n_frames = round(iti_duration_s * refresh_hz)
 
     event.clearEvents(eventType="keyboard")
 
-    for _ in range(n_frames):
+    for frame_index in range(n_frames):
         stims["fixation"].color = "white"
         stims["fixation"].draw()
 
+        if trigger is not None and frame_index == 0:
+            win.callOnFlip(trigger.send_code, stimulus_offset_code)
+        elif trigger is not None and frame_index == 1:
+            win.callOnFlip(trigger.send_code, 0)
         win.flip()
 
         handle_runtime_keys(win)
@@ -614,6 +618,7 @@ def run_experiment_trials(
             stims=stims,
             iti_duration_s=iti_duration_s,
             refresh_hz=refresh_hz,
+            trigger=trigger,
         )
 
         log_trial(

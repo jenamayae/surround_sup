@@ -606,6 +606,37 @@ class InterTrialIntervalTests(unittest.TestCase):
             if name != "fixation" and not isinstance(stim, list)
         ))
 
+    def test_iti_sends_stimulus_offset_on_first_flip_and_clears_on_second(self):
+        event_log = []
+        win = FakeWindow(event_log=event_log)
+        trigger = FakeTrigger(event_log=event_log)
+
+        with patch.object(main.event, "clearEvents", create=True), patch.object(
+            main, "handle_runtime_keys"
+        ):
+            main.run_iti(
+                win=win,
+                stims=make_recording_stims(),
+                iti_duration_s=0.5,
+                refresh_hz=8,
+                trigger=trigger,
+            )
+
+        self.assertEqual(trigger.codes, [main.stimulus_offset_code, 0])
+        self.assertEqual(
+            event_log,
+            [
+                ("scheduled", "send_code"),
+                ("flip", 1),
+                ("send_code", main.stimulus_offset_code),
+                ("scheduled", "send_code"),
+                ("flip", 1),
+                ("send_code", 0),
+                ("flip", 0),
+                ("flip", 0),
+            ],
+        )
+
 
 class FakeTrigger:
     def __init__(self, event_log=None):
