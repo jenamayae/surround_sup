@@ -64,6 +64,13 @@ def setup_display():
         monitor_width_cm=monitor_width_cm,
         viewing_distance_cm=viewing_distance_cm,
     )
+    measured_refresh_hz = win.getActualFrameRate()
+    if measured_refresh_hz is None or abs(measured_refresh_hz - refresh_hz) > 1:
+        raise RuntimeError(
+            f"Measured refresh rate {measured_refresh_hz} Hz does not match "
+            f"configured refresh_hz {refresh_hz} Hz."
+        )
+    win.recordFrameIntervals = True
     stims = make_stimuli(win)
     return win, stims, refresh_hz
 
@@ -552,6 +559,7 @@ def log_trial(
     trial,
     events,
     quest_estimated_threshold,
+    dropped_frame_count,
 ):
     surround_present = trial["surround_orientation"] is not None
 
@@ -574,6 +582,7 @@ def log_trial(
             [event_info["target_contrast"] for event_info in events]
         ),
         "quest_estimated_threshold": quest_estimated_threshold,
+        "dropped_frame_count": dropped_frame_count,
     }
 
     for key, value in row.items():
@@ -593,6 +602,7 @@ def run_experiment_trials(
     refresh_hz,
     trigger,
     quest_controllers,
+    frame_interval_log,
 ):
     current_block_name = None
     trials = generate_trials(refresh_hz=refresh_hz)
@@ -603,6 +613,7 @@ def run_experiment_trials(
             current_block_name = trial["block_name"]
 
         quest_controller = quest_controllers[trial["condition_id"]]
+        win.frameIntervals = []
         trial_events = run_trial(
             win=win,
             stims=stims,
@@ -613,6 +624,15 @@ def run_experiment_trials(
             trigger=trigger,
             trial_num=trial_num,
         )
+        intervals = list(win.frameIntervals)
+        # index 0 spans the pre-trial gap (previous flip to frame 0), so it is not counted
+        dropped = [
+            i for i, dt in enumerate(intervals) if i >= 1 and dt > 1.5 / refresh_hz
+        ]
+        frame_interval_log[str(trial_num)] = {
+            "intervals_s": intervals,
+            "dropped_frame_indices": dropped,
+        }
         run_iti(
             win=win,
             stims=stims,
@@ -627,6 +647,7 @@ def run_experiment_trials(
             trial=trial,
             events=trial_events,
             quest_estimated_threshold=quest_controller.estimated_threshold(),
+            dropped_frame_count=len(dropped),
         )
 
 
@@ -650,6 +671,7 @@ def main():
     write_session_info_json(run_paths["session_info_path"], session_info)
 
     trigger_backend = None
+    frame_interval_log = {}
 
     try:
         trigger_class = SimulatedLabjackFio8BitTrigger if simulate_labjack else LabjackFio8BitTrigger
@@ -663,6 +685,7 @@ def main():
             refresh_hz=refresh_hz,
             trigger=trigger_backend,
             quest_controllers=quest_controllers,
+            frame_interval_log=frame_interval_log,
         )
         show_message(win, "End of experiment. Thank you!\nPress SPACE to exit.")
     except ExperimentQuit:
@@ -676,6 +699,8 @@ def main():
             run_paths=run_paths,
             run_id=exp_info["run"],
         )
+        frame_intervals_path = run_paths["metadata_dir"] / f"frame_intervals_run-{exp_info['run']}.json"
+        frame_intervals_path.write_text(json.dumps(frame_interval_log, indent=2) + "\n")
         win.close()
 
     core.quit()

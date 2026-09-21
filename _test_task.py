@@ -119,7 +119,7 @@ from trials import generate_trials
 
 class DisplaySetupTests(unittest.TestCase):
     def test_setup_display_uses_configured_120_hz(self):
-        win = object()
+        win = types.SimpleNamespace(getActualFrameRate=lambda: 120.0)
         stims = object()
 
         with patch.object(main, "make_window", return_value=win) as make_window, patch.object(
@@ -407,6 +407,7 @@ class TrialLoggingTests(unittest.TestCase):
             trial=trial,
             events=events,
             quest_estimated_threshold=0.1,
+            dropped_frame_count=0,
         )
 
         self.assertEqual(exp.entry_count, 1)
