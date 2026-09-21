@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
+import subprocess
 
 from psychopy import core, data, event, gui, visual
 
@@ -140,7 +141,7 @@ def write_session_info_json(path, session_info):
     path.write_text(json.dumps(session_info, indent=2) + "\n")
 
 
-def make_session_info(exp_info, datetime_start, refresh_hz):
+def make_session_info(exp_info, datetime_start, refresh_hz, code_version):
     return {
         "participant": {
             "sub_id": exp_info["subject"],
@@ -150,6 +151,7 @@ def make_session_info(exp_info, datetime_start, refresh_hz):
         "session": {
             "datetime_start": datetime_start,
         },
+        "code_version": code_version,
         "stim configs": {
             "center_flicker_hz": center_flicker_hz,
             "surround_flicker_hz": surround_flicker_hz,
@@ -656,9 +658,40 @@ def run_experiment_trials(
         )
 
 
+def get_git_state():
+    repo_dir = Path(__file__).resolve().parent
+
+    def run_git(*args):
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=repo_dir,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("git is not installed or not on PATH.") from exc
+        except subprocess.CalledProcessError as exc:
+            if "not a git repository" in exc.stderr:
+                raise RuntimeError(f"{repo_dir} is not a git repository.") from exc
+            raise RuntimeError(
+                f"git {' '.join(args)} failed in {repo_dir}: {exc.stderr.strip()}"
+            ) from exc
+        return result.stdout
+
+    return {
+        "commit": run_git("rev-parse", "HEAD").strip(),
+        "dirty": bool(run_git("status", "--porcelain").strip()),
+        "diff": run_git("diff", "HEAD"),
+        "untracked": run_git("ls-files", "--others", "--exclude-standard").splitlines(),
+    }
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     datetime_start = datetime.now().isoformat(timespec="seconds")
+    code_version = get_git_state()
     exp_info = collect_exp_info()
     if exp_info is None:
         core.quit()
@@ -672,6 +705,7 @@ def main():
         exp_info,
         datetime_start,
         refresh_hz,
+        code_version=code_version,
     )
     write_session_info_json(run_paths["session_info_path"], session_info)
 

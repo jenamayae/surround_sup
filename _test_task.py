@@ -514,6 +514,7 @@ class SessionMetadataTests(unittest.TestCase):
             exp_info=exp_info,
             datetime_start="2026-08-04T12:00:00",
             refresh_hz=120.0,
+            code_version={"commit": "abc", "dirty": False, "diff": ""},
         )
 
         self.assertEqual(
