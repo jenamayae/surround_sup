@@ -235,6 +235,11 @@ class SimulatedLabjackFio8BitTrigger(BaseTrigger):
     def require_open(self):
         return
 
+    def send_code(self, code):
+        if not 0 <= int(code) <= 255:
+            raise ValueError(f"Trigger code must be in [0, 255], got {code}")
+        logging.info("Simulated trigger code=%s t=%s", code, time.perf_counter())
+
     def pulse_event(self, code: int, pulse_width_s=None, min_gap_s=None):
         pulse_width_s = self.pulse_width_s if pulse_width_s is None else pulse_width_s
         min_gap_s = self.min_gap_s if min_gap_s is None else min_gap_s

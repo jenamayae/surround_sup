@@ -111,6 +111,7 @@ install_psychopy_stubs()
 
 import main
 import stimuli
+from config import block_definitions, condition_event_code_rows
 from hardware import BaseTrigger, TriggerDispatcher
 from task import QUEST_CONFIG, QuestPlusController, build_event_frame_lists
 from trials import generate_trials
@@ -545,11 +546,16 @@ class SessionMetadataTests(unittest.TestCase):
 
 
 class TrialGenerationTests(unittest.TestCase):
-    def test_single_task_block_has_20_trials_per_condition(self):
+    def test_single_task_block_has_configured_trials_per_condition(self):
         trials = generate_trials(refresh_hz=120)
+        trials_per_condition = block_definitions[0]["trials_per_condition"]
+        condition_ids = [row["condition_id"] for row in condition_event_code_rows]
 
-        self.assertEqual(len(trials), 120)
-        self.assertEqual(Counter(trial["condition_id"] for trial in trials), {i: 20 for i in range(1, 7)})
+        self.assertEqual(len(trials), trials_per_condition * len(condition_ids))
+        self.assertEqual(
+            Counter(trial["condition_id"] for trial in trials),
+            {condition_id: trials_per_condition for condition_id in condition_ids},
+        )
         self.assertEqual({trial["block_name"] for trial in trials}, {"ssvep_task"})
         self.assertTrue(all("block_index" not in trial for trial in trials))
         self.assertTrue(all("trial_index_within_block" not in trial for trial in trials))
@@ -601,22 +607,15 @@ class InterTrialIntervalTests(unittest.TestCase):
         ))
 
 
-class FakeDispatcher:
+class FakeTrigger:
     def __init__(self, event_log=None):
-        self.submissions = []
+        self.codes = []
         self.event_log = event_log
 
-    def submit(self, code, *, label, frame_num=None, trial_num=None):
-        self.submissions.append(
-            {
-                "code": code,
-                "label": label,
-                "frame_num": frame_num,
-                "trial_num": trial_num,
-            }
-        )
+    def send_code(self, code):
+        self.codes.append(code)
         if self.event_log is not None:
-            self.event_log.append(("trigger_submit", label, frame_num))
+            self.event_log.append(("send_code", code))
 
 
 class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
@@ -637,7 +636,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
     def test_run_trial_uses_call_on_flip_for_trial_start_and_frame_marker(self):
         event_log = []
         win = FakeWindow(event_log=event_log)
-        dispatcher = FakeDispatcher(event_log=event_log)
+        trigger = FakeTrigger(event_log=event_log)
         trial = self.make_trial()
 
         with patch.object(main, "build_trial_events", return_value=[]), patch.object(
@@ -656,33 +655,33 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
                 trial_duration_s=81,
                 refresh_hz=1,
                 quest_controller=DummyQuestController(),
-                trigger_dispatcher=dispatcher,
+                trigger=trigger,
                 trial_num=4,
             )
 
         self.assertEqual(result, [])
         self.assertEqual(
-            [entry[0] for entry in event_log[:6]],
-            ["scheduled", "flip", "trigger_submit", "flip", "flip", "flip"],
-        )
-        self.assertEqual(
-            dispatcher.submissions,
+            event_log[:7],
             [
-                {"code": 7, "label": "trial_start", "frame_num": 0, "trial_num": 4},
-                {
-                    "code": main.frame_marker_code,
-                    "label": "frame_marker",
-                    "frame_num": 80,
-                    "trial_num": 4,
-                },
-                {
-                    "code": main.stimulus_offset_code,
-                    "label": "stimulus_offset",
-                    "frame_num": 81,
-                    "trial_num": 4,
-                },
+                ("scheduled", "send_code"),
+                ("flip", 1),
+                ("send_code", 7),
+                ("scheduled", "send_code"),
+                ("flip", 1),
+                ("send_code", 0),
+                ("flip", 0),
             ],
         )
+        self.assertEqual(
+            event_log[-4:],
+            [
+                ("scheduled", "send_code"),
+                ("flip", 1),
+                ("send_code", main.frame_marker_code),
+                ("send_code", 0),
+            ],
+        )
+        self.assertEqual(trigger.codes, [7, 0, main.frame_marker_code, 0])
 
 
 

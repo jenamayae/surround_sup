@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
 
 from psychopy import core, data, event, gui, visual
@@ -34,18 +35,11 @@ from config import (
     surround_sf,
     task_instruction_text,
     trial_duration_s,
-    trigger_min_gap_s,
-    trigger_pulse_width_s,
     viewing_distance_cm,
 )
 from hardware import (
     LabjackFio8BitTrigger,
     SimulatedLabjackFio8BitTrigger,
-    TriggerDispatcher,
-    log_trigger_settings,
-    maybe_send_frame_marker,
-    send_stimulus_offset,
-    send_trial_start_codes,
 )
 from stimuli import draw_stimulus, make_stimuli, make_window, prepare_stimuli_for_trial
 from task import (
@@ -195,8 +189,7 @@ def make_session_info(exp_info, datetime_start, refresh_hz):
             "stimulus_offset_code": stimulus_offset_code,
             "frame_marker_code": frame_marker_code,
             "frame_marker_interval": frame_marker_interval,
-            "trigger_pulse_width_s": trigger_pulse_width_s,
-            "trigger_min_gap_s": trigger_min_gap_s,
+            "trigger_pulse": "set on flip, cleared on next flip (1 frame)",
         },
         "condition_event_codes": {
             f"condition_{row['condition_id']:02d}": row
@@ -414,23 +407,6 @@ def record_response(frame_num, response_key, events, event_index, quest_controll
     return event_index
 
 
-def schedule_trial_start_on_flip(trigger_dispatcher, trial, frame_num, trial_num=None):
-    send_trial_start_codes(
-        trigger_dispatcher,
-        trial,
-        frame_num=frame_num,
-        trial_num=trial_num,
-    )
-
-
-def schedule_frame_marker_on_flip(trigger_dispatcher, frame_num, trial_num=None):
-    maybe_send_frame_marker(
-        trigger_dispatcher,
-        frame_num,
-        trial_num=trial_num,
-    )
-
-
 def run_trial(
     win,
     stims,
@@ -438,7 +414,7 @@ def run_trial(
     trial_duration_s,
     refresh_hz,
     quest_controller,
-    trigger_dispatcher=None,
+    trigger=None,
     trial_num=None,
 ):
     n_frames = round(trial_duration_s * refresh_hz)
@@ -457,6 +433,8 @@ def run_trial(
             quest_controller,
         )
         next_prepared_index = 1
+
+    trigger_is_high = False
 
     for frame_num in range(n_frames):
         response_event_index = finalize_elapsed_events(
@@ -517,21 +495,18 @@ def run_trial(
             ),
         )
 
-        if trigger_dispatcher is not None and frame_num == 0:
-            win.callOnFlip(
-                schedule_trial_start_on_flip,
-                trigger_dispatcher,
-                trial,
-                frame_num,
-                trial_num,
-            )
-        if trigger_dispatcher is not None and frame_num > 0 and frame_num % frame_marker_interval == 0:
-            win.callOnFlip(
-                schedule_frame_marker_on_flip,
-                trigger_dispatcher,
-                frame_num,
-                trial_num,
-            )
+        code = None
+        if frame_num == 0:
+            code = trial["condition_id"]
+        elif frame_num % frame_marker_interval == 0:
+            code = frame_marker_code
+        if trigger is not None:
+            if code is not None:
+                win.callOnFlip(trigger.send_code, code)
+                trigger_is_high = True
+            elif trigger_is_high:
+                win.callOnFlip(trigger.send_code, 0)
+                trigger_is_high = False
         win.flip()
 
         response_key = get_task_response()
@@ -547,12 +522,8 @@ def run_trial(
         handle_runtime_keys(win)
 
     finalize_elapsed_events(n_frames, trial_events, response_event_index, quest_controller)
-    if trigger_dispatcher is not None:
-        send_stimulus_offset(
-            trigger_dispatcher,
-            frame_num=n_frames,
-            trial_num=trial_num,
-        )
+    if trigger is not None and trigger_is_high:
+        trigger.send_code(0)
 
     return trial_events
 
@@ -616,7 +587,7 @@ def run_experiment_trials(
     stims,
     exp,
     refresh_hz,
-    trigger_dispatcher,
+    trigger,
     quest_controllers,
 ):
     current_block_name = None
@@ -635,7 +606,7 @@ def run_experiment_trials(
             trial_duration_s=trial_duration_s,
             refresh_hz=refresh_hz,
             quest_controller=quest_controller,
-            trigger_dispatcher=trigger_dispatcher,
+            trigger=trigger,
             trial_num=trial_num,
         )
         run_iti(
@@ -655,6 +626,7 @@ def run_experiment_trials(
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     datetime_start = datetime.now().isoformat(timespec="seconds")
     exp_info = collect_exp_info()
     if exp_info is None:
@@ -673,29 +645,24 @@ def main():
     write_session_info_json(run_paths["session_info_path"], session_info)
 
     trigger_backend = None
-    trigger_dispatcher = None
 
     try:
         trigger_class = SimulatedLabjackFio8BitTrigger if simulate_labjack else LabjackFio8BitTrigger
         trigger_backend = trigger_class()
         trigger_backend.open()
-        trigger_dispatcher = TriggerDispatcher(trigger_backend)
-        log_trigger_settings()
 
         run_experiment_trials(
             win=win,
             stims=stims,
             exp=exp,
             refresh_hz=refresh_hz,
-            trigger_dispatcher=trigger_dispatcher,
+            trigger=trigger_backend,
             quest_controllers=quest_controllers,
         )
         show_message(win, "End of experiment. Thank you!\nPress SPACE to exit.")
     except ExperimentQuit:
         pass
     finally:
-        if trigger_dispatcher is not None:
-            trigger_dispatcher.close()
         if trigger_backend is not None:
             trigger_backend.close()
         exp.saveAsWideText(str(run_paths["trial_conditions_path"]) + ".csv")
