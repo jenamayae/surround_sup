@@ -2,6 +2,7 @@ from psychopy.tools.coordinatetools import pol2cart
 
 # --- experiment options ---
 simulate_labjack = True
+calibration_mode = False
 
 # --- display ---
 monitor_name = "dell_p2426h" #"asus_oled"

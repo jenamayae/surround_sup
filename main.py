@@ -6,6 +6,7 @@ from pathlib import Path
 from psychopy import core, data, event, gui, visual
 
 from config import (
+    calibration_mode,
     center_change_count_per_trial,
     center_change_duration_sign_reversals,
     center_contrast,
@@ -193,6 +194,7 @@ def make_session_info(exp_info, datetime_start, refresh_hz):
             "refresh_hz": refresh_hz,
         },
         "events": {
+            "calibration_mode": calibration_mode,
             "stimulus_offset_code": stimulus_offset_code,
             "frame_marker_code": frame_marker_code,
             "frame_marker_interval": frame_marker_interval,
@@ -543,6 +545,9 @@ def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
     for frame_index in range(n_frames):
         stims["fixation"].color = "white"
         stims["fixation"].draw()
+        if calibration_mode and frame_index < 12:
+            stims["photocell_box"].contrast = -1.0
+            stims["photocell_box"].draw()
 
         if trigger is not None and frame_index == 0:
             win.callOnFlip(trigger.send_code, stimulus_offset_code)

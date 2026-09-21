@@ -3,6 +3,7 @@ from psychopy.visual.grating import GratingStim
 
 from config import (
     bg_color,
+    calibration_mode,
     center_diameter_deg,
     center_flicker_hz,
     center_holes_diameter_deg,
@@ -189,7 +190,8 @@ def draw_stimulus(
     for center in centers_to_draw:
         center.draw()
 
-    stims["photocell_box"].draw()
+    if calibration_mode:
+        stims["photocell_box"].draw()
     stims["fixation"].color = fixation_color
     stims["fixation_hole"].draw()
     stims["fixation"].draw()
