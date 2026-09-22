@@ -3,6 +3,7 @@ import json
 import logging
 from pathlib import Path
 import subprocess
+import time
 
 from psychopy import core, data, event, gui, visual
 
@@ -446,8 +447,11 @@ def run_trial(
         next_prepared_index = 1
 
     trigger_is_high = False
+    work_ms = []
+    flip_ms = []
 
     for frame_num in range(n_frames):
+        frame_start = time.perf_counter()
         response_event_index = finalize_elapsed_events(
             frame_num,
             trial_events,
@@ -518,7 +522,10 @@ def run_trial(
             elif trigger_is_high:
                 win.callOnFlip(trigger.send_code, 0)
                 trigger_is_high = False
+        pre_flip = time.perf_counter()
         win.flip()
+        post_flip = time.perf_counter()
+        flip_ms.append((post_flip - pre_flip) * 1000.0)
 
         response_key = get_task_response()
         if response_key is not None:
@@ -531,12 +538,15 @@ def run_trial(
             )
 
         handle_runtime_keys(win)
+        work_ms.append(
+            ((pre_flip - frame_start) + (time.perf_counter() - post_flip)) * 1000.0
+        )
 
     finalize_elapsed_events(n_frames, trial_events, response_event_index, quest_controller)
     if trigger is not None and trigger_is_high:
         trigger.send_code(0)
 
-    return trial_events
+    return trial_events, work_ms, flip_ms
 
 
 def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
@@ -621,7 +631,7 @@ def run_experiment_trials(
 
         quest_controller = quest_controllers[trial["condition_id"]]
         win.frameIntervals = []
-        trial_events = run_trial(
+        trial_events, work_ms, flip_ms = run_trial(
             win=win,
             stims=stims,
             trial=trial,
@@ -639,6 +649,8 @@ def run_experiment_trials(
         frame_interval_log[str(trial_num)] = {
             "intervals_s": intervals,
             "dropped_frame_indices": dropped,
+            "work_ms": work_ms,
+            "flip_ms": flip_ms,
         }
         run_iti(
             win=win,

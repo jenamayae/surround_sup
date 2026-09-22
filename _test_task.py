@@ -681,7 +681,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
         ), patch.object(
             main, "handle_runtime_keys"
         ):
-            result = main.run_trial(
+            trial_events, work_ms, flip_ms = main.run_trial(
                 win=win,
                 stims={},
                 trial=trial,
@@ -692,7 +692,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
                 trial_num=4,
             )
 
-        self.assertEqual(result, [])
+        self.assertEqual(trial_events, [])
         self.assertEqual(
             event_log[:7],
             [
