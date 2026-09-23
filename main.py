@@ -15,7 +15,6 @@ from config import (
     center_flicker_hz,
     center_sf,
     condition_event_code_rows,
-    config_local_present,
     contrast_change_interval_s,
     contrast_change_start_s,
     contrast_response_keys,
@@ -204,7 +203,6 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version):
                 "monitor_width_cm": monitor_width_cm,
                 "viewing_distance_cm": viewing_distance_cm,
                 "fullscreen": fullscreen,
-                "config_local_present": config_local_present,
             },
         },
         "events": {

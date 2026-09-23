@@ -1,29 +1,34 @@
 from psychopy.tools.coordinatetools import pol2cart
 
-# --- experiment options ---
-simulate_labjack = True
-calibration_mode = False
-
 # --- display ---
-monitor_name = "dell_p2426h" #"asus_oled"
-screen_index = 1
-monitor_pixels = [2560, 1440]
 refresh_hz = 120
-monitor_width_cm = 58
-viewing_distance_cm = 60
-fullscreen = True
 bg_color = (0, 0, 0)
 units = "deg"
 
-# Per-machine settings. config_local.py is not tracked by git;
-# copy config_local_example.py to create it.
-try:
-    from config_local import *  # noqa: F401,F403
-    config_local_present = True
-except ImportError as err:
-    if err.name != "config_local":
-        raise
-    config_local_present = False
+# --- per machine settings ---
+# config_local.pynot tracked by git;
+
+from config_local import *  # noqa: F401,F403
+
+_required_local_settings = (
+    "simulate_labjack",
+    "calibration_mode",
+    "monitor_name",
+    "screen_index",
+    "monitor_pixels",
+    "monitor_width_cm",
+    "viewing_distance_cm",
+    "fullscreen",
+)
+_missing_local_settings = [
+    name for name in _required_local_settings if name not in globals()
+]
+if _missing_local_settings:
+    raise ImportError(
+        "config_local.py is missing required settings: "
+        + ", ".join(_missing_local_settings)
+        + ". Set them in config_local.py."
+    )
 
 # --- stimulation frequencies ---
 center_flicker_hz = 6

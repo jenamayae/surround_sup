@@ -1,5 +1,6 @@
 # Copy this file to config_local.py and edit it for this machine.
-# config_local.py is not tracked by git; config.py imports it if present.
+# config_local.py is not tracked by git; config.py imports it and will not
+# load without it. All eight names below are required.
 
 simulate_labjack = True
 calibration_mode = False
