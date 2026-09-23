@@ -6,7 +6,7 @@ bg_color = (0, 0, 0)
 units = "deg"
 
 # --- per machine settings ---
-# config_local.pynot tracked by git;
+# config_local.py not tracked by git;
 
 from config_local import *  # noqa: F401,F403
 
