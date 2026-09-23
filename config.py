@@ -15,6 +15,16 @@ fullscreen = True
 bg_color = (0, 0, 0)
 units = "deg"
 
+# Per-machine settings. config_local.py is not tracked by git;
+# copy config_local_example.py to create it.
+try:
+    from config_local import *  # noqa: F401,F403
+    config_local_present = True
+except ImportError as err:
+    if err.name != "config_local":
+        raise
+    config_local_present = False
+
 # --- stimulation frequencies ---
 center_flicker_hz = 6
 surround_flicker_hz = 7.5
