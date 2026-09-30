@@ -31,7 +31,7 @@ if _missing_local_settings:
     )
 
 # --- stimulation frequencies ---
-center_flicker_hz = 6
+center_flicker_hz = 24
 surround_flicker_hz = 7.5
 
 def frames_per_reversal(refresh_hz, flicker_hz):
