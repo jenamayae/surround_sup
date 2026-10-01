@@ -1,9 +1,12 @@
+import ctypes
 from datetime import datetime
 import json
 import logging
 from pathlib import Path
 import subprocess
+import sys
 
+import numpy as np
 from psychopy import core, data, event, gui, visual
 
 from config import (
@@ -19,6 +22,7 @@ from config import (
     contrast_change_start_s,
     contrast_response_keys,
     contrast_task_eligible_eccentricities,
+    display_gamma,
     fixation_red_duration_s,
     frame_marker_code,
     frame_marker_interval,
@@ -43,7 +47,14 @@ from hardware import (
     LabjackFio8BitTrigger,
     SimulatedLabjackFio8BitTrigger,
 )
-from stimuli import draw_stimulus, make_stimuli, make_window, prepare_stimuli_for_trial
+from stimuli import (
+    draw_stimulus,
+    grating_texture_precision,
+    make_stimuli,
+    make_window,
+    prepare_stimuli_for_trial,
+    stim_for_contrast,
+)
 from task import (
     QUEST_CONFIG,
     QuestPlusController,
@@ -57,6 +68,26 @@ from task import (
 from trials import generate_trials
 
 
+def hardware_gamma_ramp_max_deviation(ramp):
+    # ramp: 3 x 256 uint16 from GetDeviceGammaRamp; identity is i / 255 * 65535
+    ramp = np.asarray(ramp, dtype=float) / 65535
+    return float(np.max(np.abs(ramp - np.linspace(0, 1, ramp.shape[1]))))
+
+
+def check_hardware_gamma_ramp_is_identity(win, tolerance=0.002):
+    ramp = np.zeros((3, 256), dtype=np.uint16)
+    # _dc is a ctypes pointer (GetDC's restype is reassigned at runtime), so cast instead of wrapping
+    dc = ctypes.cast(win.winHandle._dc, ctypes.c_void_p)
+    if not ctypes.windll.gdi32.GetDeviceGammaRamp(dc, ramp.ctypes.data_as(ctypes.c_void_p)):
+        raise RuntimeError("GetDeviceGammaRamp failed; cannot verify the hardware gamma ramp.")
+    deviation = hardware_gamma_ramp_max_deviation(ramp)
+    if deviation > tolerance:
+        raise RuntimeError(
+            f"Hardware gamma ramp deviates from identity by {deviation:.4f} "
+            f"(tolerance {tolerance}). Gamma is corrected in software; the ramp must be identity."
+        )
+
+
 def setup_display():
     win = make_window(
         size=monitor_pixels,
@@ -66,6 +97,7 @@ def setup_display():
         monitor_width_cm=monitor_width_cm,
         viewing_distance_cm=viewing_distance_cm,
     )
+    check_hardware_gamma_ramp_is_identity(win)
     measured_refresh_hz = win.getActualFrameRate()
     if measured_refresh_hz is None or abs(measured_refresh_hz - refresh_hz) > 1:
         raise RuntimeError(
@@ -141,7 +173,7 @@ def write_session_info_json(path, session_info):
     path.write_text(json.dumps(session_info, indent=2) + "\n")
 
 
-def make_session_info(exp_info, datetime_start, refresh_hz, code_version):
+def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_vendor):
     return {
         "participant": {
             "sub_id": exp_info["subject"],
@@ -194,6 +226,9 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version):
             "monitor_width_cm": monitor_width_cm,
             "viewing_distance_cm": viewing_distance_cm,
             "refresh_hz": refresh_hz,
+            "gamma_correction": "software gamma correction, hardware ramp identity",
+            "gl_vendor": gl_vendor,
+            "grating_texture_precision": grating_texture_precision(gl_vendor, sys.platform),
             "config_local": {
                 "simulate_labjack": simulate_labjack,
                 "calibration_mode": calibration_mode,
@@ -203,6 +238,7 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version):
                 "monitor_width_cm": monitor_width_cm,
                 "viewing_distance_cm": viewing_distance_cm,
                 "fullscreen": fullscreen,
+                "display_gamma": display_gamma,
             },
         },
         "events": {
@@ -244,6 +280,13 @@ def make_quest_controllers():
         row["condition_id"]: QuestPlusController(condition_id=row["condition_id"])
         for row in condition_event_code_rows
     }
+
+
+def check_quest_contrasts_have_stims(stims, quest_controllers):
+    for quest_controller in quest_controllers.values():
+        for intensity in quest_controller.handler.intensityVals:
+            for center_index in eligible_center_indices():
+                stim_for_contrast(stims["centers"][center_index], intensity)
 
 
 def save_questplus_handlers(quest_controllers, run_paths, run_id):
@@ -710,12 +753,14 @@ def main():
     exp = make_experiment_handler(exp_info, run_paths)
     win, stims, refresh_hz = setup_display()
     quest_controllers = make_quest_controllers()
+    check_quest_contrasts_have_stims(stims, quest_controllers)
 
     session_info = make_session_info(
         exp_info,
         datetime_start,
         refresh_hz,
         code_version=code_version,
+        gl_vendor=win.glVendor,
     )
     write_session_info_json(run_paths["session_info_path"], session_info)
 

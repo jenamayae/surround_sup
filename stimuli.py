@@ -1,14 +1,16 @@
+import numpy as np
 from psychopy import monitors, visual
 from psychopy.visual.grating import GratingStim
 
 from config import (
-    bg_color,
     calibration_mode,
+    center_contrast,
     center_diameter_deg,
     center_flicker_hz,
     center_holes_diameter_deg,
     center_positions_deg,
     center_sf,
+    display_gamma,
     frames_per_reversal,
     photocell_box_pos_deg,
     photocell_box_size_deg,
@@ -20,6 +22,36 @@ from config import (
     surround_sf,
     units,
 )
+from task import QUEST_INTENSITY_VALS, eligible_center_indices
+
+grating_texture_res = 256
+contrast_match_tolerance = 1e-9
+
+
+def luminance_to_rgb(L):
+    # L is luminance as a fraction of white (0..1); returns PsychoPy rgb (-1..1)
+    return 2 * L ** (1 / display_gamma) - 1
+
+
+def grating_texture(contrast, res=grating_texture_res):
+    # one cycle, sampled at texel centres; sin(2*pi*x - pi/2) matches PsychoPy's "sin"
+    x = (np.arange(res) + 0.5) / res
+    row = luminance_to_rgb(0.5 * (1 + contrast * np.sin(2 * np.pi * x - np.pi / 2)))
+    return np.tile(row, (res, 1)).astype(np.float32)
+
+
+def grating_texture_precision(gl_vendor, platform):
+    # mirrors PsychoPy's _createTexture: numpy tex is RGB16F on NVIDIA (non-Mac), else RGB32F
+    if platform != "darwin" and gl_vendor.startswith("nvidia"):
+        return "16-bit float"
+    return "32-bit float"
+
+
+def stim_for_contrast(stims_by_contrast, contrast):
+    nearest = min(stims_by_contrast, key=lambda value: abs(value - contrast))
+    if abs(nearest - contrast) > contrast_match_tolerance:
+        raise ValueError(f"No precomputed grating for contrast {contrast}.")
+    return stims_by_contrast[nearest]
 
 
 def phase_reversal(frame_num, refresh_hz, flicker_hz):
@@ -43,23 +75,35 @@ def make_window(
     mon.setSizePix(size)
     mon.setWidth(monitor_width_cm)
     mon.setDistance(viewing_distance_cm)
+    # in memory only: a saved gamma makes PsychoPy load it into the hardware ramp
+    gamma_grid = mon.getGammaGrid()
+    if gamma_grid is not None:
+        gamma_grid = gamma_grid.copy()
+        gamma_grid[1:, 2] = 1
+        mon.setGammaGrid(gamma_grid)
+    mon.setGamma(None)
 
+    mean_gray = luminance_to_rgb(0.5)
     return visual.Window(
         size=size,
         fullscr=fullscr,
         screen=screen,
         monitor=mon,
         units=units,
-        color=bg_color,
+        color=(mean_gray, mean_gray, mean_gray),
         bpc=(10, 10, 10),
     )
 
 
 def make_stimuli(win):
+    mean_gray = luminance_to_rgb(0.5)
+    mean_gray_rgb = (mean_gray, mean_gray, mean_gray)
+    task_center_indices = eligible_center_indices()
+
     fixation_hole = GratingStim(
         win=win,
         tex=None,  # pyright: ignore
-        color=bg_color,
+        color=mean_gray_rgb,
         mask=raised_cos_fringe,
         maskParams=raised_cos_fringe_params,
         size=center_diameter_deg,
@@ -79,27 +123,34 @@ def make_stimuli(win):
 
     centers = []
     center_holes = []
-    for pos in center_positions_deg:
+    for center_index, pos in enumerate(center_positions_deg):
+        # one stim per contrast this center can show, textures uploaded once here
+        contrasts = [center_contrast]
+        if center_index in task_center_indices:
+            contrasts += QUEST_INTENSITY_VALS
         centers.append(
-            GratingStim(
-                win=win,
-                tex="sin",
-                mask=raised_cos_fringe,
-                maskParams=raised_cos_fringe_params,
-                size=center_diameter_deg,
-                sf=center_sf,
-                contrast=1.0,
-                ori=0,
-                phase=0.0,
-                pos=pos,
-                autoLog=False,
-            )
+            {
+                contrast: GratingStim(
+                    win=win,
+                    tex=grating_texture(contrast),
+                    mask=raised_cos_fringe,
+                    maskParams=raised_cos_fringe_params,
+                    size=center_diameter_deg,
+                    sf=center_sf,
+                    contrast=1.0,
+                    ori=0,
+                    phase=0.0,
+                    pos=pos,
+                    autoLog=False,
+                )
+                for contrast in contrasts
+            }
         )
         center_holes.append(
             GratingStim(
                 win=win,
                 tex=None,  # pyright: ignore
-                color=bg_color,
+                color=mean_gray_rgb,
                 mask=raised_cos_fringe,
                 maskParams=raised_cos_fringe_params,
                 size=center_holes_diameter_deg,
@@ -109,19 +160,21 @@ def make_stimuli(win):
             )
         )
 
-    surround = GratingStim(
-        win=win,
-        tex="sin",
-        mask=raised_cos_fringe,
-        maskParams=raised_cos_fringe_params,
-        size=surround_diameter_deg,
-        sf=surround_sf,
-        contrast=1.0,
-        ori=0,
-        phase=0.0,
-        pos=(0, 0),
-        autoLog=False,
-    )
+    surround = {
+        surround_contrast: GratingStim(
+            win=win,
+            tex=grating_texture(surround_contrast),
+            mask=raised_cos_fringe,
+            maskParams=raised_cos_fringe_params,
+            size=surround_diameter_deg,
+            sf=surround_sf,
+            contrast=1.0,
+            ori=0,
+            phase=0.0,
+            pos=(0, 0),
+            autoLog=False,
+        )
+    }
 
     photocell_box = GratingStim(
         win=win,
@@ -145,11 +198,13 @@ def make_stimuli(win):
 
 
 def prepare_stimuli_for_trial(stims, trial):
-    for center in stims["centers"]:
-        center.ori = trial["center_orientation"]
+    for center_by_contrast in stims["centers"]:
+        for center in center_by_contrast.values():
+            center.ori = trial["center_orientation"]
 
     if trial["surround_orientation"] is not None:
-        stims["surround"].ori = trial["surround_orientation"]
+        for surround in stims["surround"].values():
+            surround.ori = trial["surround_orientation"]
 
 
 def draw_stimulus(
@@ -170,20 +225,20 @@ def draw_stimulus(
     stims["photocell_box"].contrast = flicker_indicator_contrast_from_phase(center_phase)
 
     centers_to_draw = []
-    for center_index, center in enumerate(stims["centers"]):
-        center.phase = center_phase
+    for center_index, center_by_contrast in enumerate(stims["centers"]):
         if center_index in task_center_indices:
             if center_index != target_index or target_contrast is None:
                 continue
-            center.contrast = target_contrast
+            center = stim_for_contrast(center_by_contrast, target_contrast)
         else:
-            center.contrast = center_contrast
+            center = stim_for_contrast(center_by_contrast, center_contrast)
+        center.phase = center_phase
         centers_to_draw.append(center)
 
     if surround_orientation is not None:
-        stims["surround"].phase = phase_reversal(frame_num, refresh_hz, surround_flicker_hz)
-        stims["surround"].contrast = surround_contrast
-        stims["surround"].draw()
+        surround = stim_for_contrast(stims["surround"], surround_contrast)
+        surround.phase = phase_reversal(frame_num, refresh_hz, surround_flicker_hz)
+        surround.draw()
         for hole in stims["center_holes"]:
             hole.draw()
 

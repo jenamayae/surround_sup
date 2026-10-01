@@ -109,11 +109,13 @@ def install_psychopy_stubs():
 
 install_psychopy_stubs()
 
+import numpy as np
+
 import main
 import stimuli
 from config import block_definitions, condition_event_code_rows
 from hardware import BaseTrigger, TriggerDispatcher
-from task import QUEST_CONFIG, QuestPlusController, build_event_frame_lists
+from task import QUEST_CONFIG, QUEST_INTENSITY_VALS, QuestPlusController, build_event_frame_lists
 from trials import generate_trials
 
 
@@ -124,11 +126,122 @@ class DisplaySetupTests(unittest.TestCase):
 
         with patch.object(main, "make_window", return_value=win) as make_window, patch.object(
             main, "make_stimuli", return_value=stims
-        ):
+        ), patch.object(main, "check_hardware_gamma_ramp_is_identity"):
             result = main.setup_display()
 
         self.assertEqual(result, (win, stims, 120.0))
         self.assertEqual(make_window.call_args.kwargs["screen"], 1)
+
+
+class SoftwareGammaCorrectionTests(unittest.TestCase):
+    def grating_contrasts(self):
+        return QUEST_INTENSITY_VALS + [stimuli.center_contrast, stimuli.surround_contrast]
+
+    def texture_luminance(self, texture):
+        return ((texture.astype(float) + 1) / 2) ** stimuli.display_gamma
+
+    def test_mean_gray_rgb(self):
+        self.assertAlmostEqual(
+            stimuli.luminance_to_rgb(0.5),
+            2 * 0.5 ** (1 / stimuli.display_gamma) - 1,
+            places=15,
+        )
+
+    def test_luminance_to_rgb_on_arrays(self):
+        rgb = stimuli.luminance_to_rgb(np.array([0.0, 0.5, 1.0]))
+
+        self.assertEqual(rgb[0], -1.0)
+        self.assertAlmostEqual(rgb[1], stimuli.luminance_to_rgb(0.5), places=15)
+        self.assertEqual(rgb[2], 1.0)
+
+    def test_textures_are_one_cycle_square_power_of_two(self):
+        texture = stimuli.grating_texture(0.05)
+
+        self.assertEqual(texture.shape, (256, 256))
+        self.assertEqual(texture.dtype, np.float32)
+        self.assertTrue(np.all(texture == texture[0]))
+
+    def test_textures_have_mean_gray_and_requested_michelson_contrast(self):
+        x = (np.arange(stimuli.grating_texture_res) + 0.5) / stimuli.grating_texture_res
+        for contrast in self.grating_contrasts():
+            with self.subTest(contrast=contrast):
+                luminance = self.texture_luminance(stimuli.grating_texture(contrast))[0]
+                mean_luminance = luminance.mean()
+                # Michelson contrast of a sinusoid = amplitude / mean; the amplitude is
+                # taken from the first Fourier component because texel centres miss the peaks
+                amplitude = 2 * abs(np.mean(luminance * np.exp(-2j * np.pi * x)))
+
+                self.assertAlmostEqual(mean_luminance, 0.5, places=6)
+                self.assertAlmostEqual(amplitude / mean_luminance, contrast, places=6)
+
+    def test_textures_match_psychopy_sin_phase(self):
+        x = (np.arange(stimuli.grating_texture_res) + 0.5) / stimuli.grating_texture_res
+        for contrast in self.grating_contrasts():
+            with self.subTest(contrast=contrast):
+                luminance = self.texture_luminance(stimuli.grating_texture(contrast))[0]
+                expected = 0.5 * (1 + contrast * np.sin(2 * np.pi * x - np.pi / 2))
+
+                self.assertLess(np.max(np.abs(luminance - expected)), 1e-6)
+
+    def test_zero_contrast_texture_is_flat_mean_gray(self):
+        texture = stimuli.grating_texture(0.0)
+
+        self.assertTrue(np.all(texture == np.float32(stimuli.luminance_to_rgb(0.5))))
+
+    def test_stim_lookup_uses_nearest_contrast_within_tolerance(self):
+        stims_by_contrast = {0.05: "low", 0.1: "high"}
+
+        self.assertEqual(stimuli.stim_for_contrast(stims_by_contrast, 0.05 + 1e-12), "low")
+        with self.assertRaises(ValueError):
+            stimuli.stim_for_contrast(stims_by_contrast, 0.05 + 1e-6)
+
+    def test_every_quest_contrast_has_a_task_center_stim(self):
+        stims = {"centers": [
+            {contrast: object() for contrast in QUEST_INTENSITY_VALS}
+            for _ in range(8)
+        ]}
+        controllers = {1: types.SimpleNamespace(
+            handler=types.SimpleNamespace(intensityVals=QUEST_INTENSITY_VALS)
+        )}
+        main.check_quest_contrasts_have_stims(stims, controllers)
+
+        controllers[1].handler.intensityVals = QUEST_INTENSITY_VALS + [0.2]
+        with self.assertRaises(ValueError):
+            main.check_quest_contrasts_have_stims(stims, controllers)
+
+    def test_gamma_ramp_deviation(self):
+        identity = np.tile(np.arange(256) * 257, (3, 1)).astype(np.uint16)
+        corrected = np.tile(
+            np.round((np.arange(256) / 255) ** (1 / 2.28) * 65535), (3, 1)
+        ).astype(np.uint16)
+
+        self.assertAlmostEqual(main.hardware_gamma_ramp_max_deviation(identity), 0.0, places=12)
+        self.assertGreater(main.hardware_gamma_ramp_max_deviation(corrected), 0.002)
+
+    def test_texture_precision_follows_gl_vendor(self):
+        self.assertEqual(
+            stimuli.grating_texture_precision("nvidia corporation", "win32"), "16-bit float"
+        )
+        self.assertEqual(stimuli.grating_texture_precision("ati technologies inc.", "win32"), "32-bit float")
+        self.assertEqual(stimuli.grating_texture_precision("nvidia corporation", "darwin"), "32-bit float")
+
+    def test_session_info_logs_gamma_correction(self):
+        session_info = main.make_session_info(
+            exp_info={"subject": "subj", "session": "001", "run": "001"},
+            datetime_start="2026-09-30T12:00:00",
+            refresh_hz=120,
+            code_version={"commit": "abc", "dirty": False, "diff": ""},
+            gl_vendor="nvidia corporation",
+        )
+        hardware = session_info["hardware"]
+
+        self.assertEqual(hardware["config_local"]["display_gamma"], stimuli.display_gamma)
+        self.assertEqual(
+            hardware["gamma_correction"],
+            "software gamma correction, hardware ramp identity",
+        )
+        self.assertEqual(hardware["gl_vendor"], "nvidia corporation")
+        self.assertIn(hardware["grating_texture_precision"], ("16-bit float", "32-bit float"))
 
 
 class QuestPlusConfigurationTests(unittest.TestCase):
@@ -217,13 +330,16 @@ class RecordingStim:
         self.draw_count += 1
 
 
-def make_recording_stims(center_count=8):
+def make_recording_stims(center_count=8, center_contrasts=(0.2, 0.08)):
     return {
         "fixation_hole": RecordingStim(),
         "fixation": RecordingStim(),
-        "centers": [RecordingStim() for _ in range(center_count)],
+        "centers": [
+            {contrast: RecordingStim() for contrast in center_contrasts}
+            for _ in range(center_count)
+        ],
         "center_holes": [RecordingStim() for _ in range(center_count)],
-        "surround": RecordingStim(),
+        "surround": {stimuli.surround_contrast: RecordingStim()},
         "photocell_box": RecordingStim(),
     }
 
@@ -248,7 +364,10 @@ class ContrastDetectionRenderingTests(unittest.TestCase):
                 )
 
                 self.assertEqual(
-                    [center.draw_count for center in stims["centers"]],
+                    [
+                        sum(center.draw_count for center in center_by_contrast.values())
+                        for center_by_contrast in stims["centers"]
+                    ],
                     [1, 1, 1, 1, 0, 0, 0, 0],
                 )
 
@@ -271,12 +390,15 @@ class ContrastDetectionRenderingTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            [center.draw_count for center in stims["centers"]],
+            [
+                sum(center.draw_count for center in center_by_contrast.values())
+                for center_by_contrast in stims["centers"]
+            ],
             [1, 1, 1, 1, 0, 1, 0, 0],
         )
-        self.assertEqual(stims["centers"][5].contrast, 0.08)
-        self.assertEqual(stims["centers"][5].phase, 0.75)
-        self.assertEqual(stims["centers"][5].ori, 135)
+        self.assertEqual(stims["centers"][5][0.08].draw_count, 1)
+        self.assertEqual(stims["centers"][5][0.08].phase, 0.75)
+        self.assertEqual(stims["centers"][5][0.08].ori, 135)
 
 
 class DummyQuestController:
@@ -515,6 +637,7 @@ class SessionMetadataTests(unittest.TestCase):
             datetime_start="2026-08-04T12:00:00",
             refresh_hz=120.0,
             code_version={"commit": "abc", "dirty": False, "diff": ""},
+            gl_vendor="nvidia corporation",
         )
 
         self.assertEqual(
@@ -605,8 +728,9 @@ class InterTrialIntervalTests(unittest.TestCase):
         self.assertEqual(stims["fixation"].color, "white")
         self.assertTrue(all(
             stim.draw_count == 0 for name, stim in stims.items()
-            if name != "fixation" and not isinstance(stim, list)
+            if name != "fixation" and not isinstance(stim, (list, dict))
         ))
+        self.assertTrue(all(stim.draw_count == 0 for stim in stims["surround"].values()))
 
     def test_iti_sends_stimulus_offset_on_first_flip_and_clears_on_second(self):
         event_log = []

@@ -19,6 +19,7 @@ _required_local_settings = (
     "monitor_width_cm",
     "viewing_distance_cm",
     "fullscreen",
+    "display_gamma",
 )
 _missing_local_settings = [
     name for name in _required_local_settings if name not in globals()
