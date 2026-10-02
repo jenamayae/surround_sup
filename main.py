@@ -1,5 +1,6 @@
 import ctypes
 from datetime import datetime
+import gc
 import json
 import logging
 from pathlib import Path
@@ -284,7 +285,7 @@ def make_quest_controllers():
 
 def check_quest_contrasts_have_stims(stims, quest_controllers):
     for quest_controller in quest_controllers.values():
-        for intensity in quest_controller.handler.intensityVals:
+        for intensity in quest_controller.intensity_vals:
             for center_index in eligible_center_indices():
                 stim_for_contrast(stims["centers"][center_index], intensity)
 
@@ -292,10 +293,14 @@ def check_quest_contrasts_have_stims(stims, quest_controllers):
 def save_questplus_handlers(quest_controllers, run_paths, run_id):
     condition_snapshots = {}
     for condition_id, quest_controller in sorted(quest_controllers.items()):
-        serialized_handler = quest_controller.handler.saveAsJson(fileName=None)
-        condition_snapshots[f"condition_{condition_id:02d}"] = json.loads(
-            serialized_handler.lstrip("\ufeff")
-        )
+        condition_snapshots[f"condition_{condition_id:02d}"] = {
+            "settings": quest_controller.quest_config,
+            "seed": quest_controller.seed,
+            "trials": quest_controller.history,
+            "threshold_vals": quest_controller.quest_config["threshold_vals"],
+            "threshold_posterior": quest_controller.threshold_posterior().tolist(),
+            "estimated_threshold": quest_controller.estimated_threshold(),
+        }
 
     path = run_paths["metadata_dir"] / f"questplus_run-{run_id}.json"
     snapshot = {
@@ -609,6 +614,9 @@ def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
         elif trigger is not None and frame_index == 1:
             win.callOnFlip(trigger.send_code, 0)
         win.flip()
+        # automatic gc is off during the run; collect once the offset trigger is cleared
+        if frame_index == 1:
+            gc.collect()
 
         handle_runtime_keys(win)
 
@@ -666,6 +674,8 @@ def run_experiment_trials(
 ):
     current_block_name = None
     trials = generate_trials(refresh_hz=refresh_hz)
+    # gc pauses can drop frames; collection runs manually in each ITI instead
+    gc.disable()
 
     for trial_num, trial in enumerate(trials, start=1):
         if trial["block_name"] != current_block_name:
@@ -709,6 +719,8 @@ def run_experiment_trials(
             quest_estimated_threshold=quest_controller.estimated_threshold(),
             dropped_frame_count=len(dropped),
         )
+
+    gc.enable()
 
 
 def get_git_state():

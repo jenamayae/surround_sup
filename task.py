@@ -3,7 +3,6 @@ from __future__ import annotations
 import random
 
 import numpy as np
-from psychopy.data.staircase import QuestPlusHandler
 
 from config import (
     CENTERS,
@@ -179,47 +178,120 @@ def format_log_list(values):
 
 
 class QuestPlusController:
+    """QUEST+ (Watson 2017) in numpy, matching PsychoPy's QuestPlusHandler / questplus.
+
+    Parameter grid axes: threshold, slope, lower asymptote, lapse rate.
+    """
+
     def __init__(
         self,
         condition_id=None,
-        n_trials=1000,
         quest_config=QUEST_CONFIG,
+        seed=None,
     ):
+        # only the options used in QUEST_CONFIG are implemented
+        if (
+            quest_config["psychometric_func"] != "weibull"
+            or quest_config["stim_scale"] != "linear"
+            or quest_config["stim_selection_method"] != "minNEntropy"
+            or quest_config["param_estimation_method"] != "mean"
+        ):
+            raise ValueError("QuestPlusController supports weibull / linear / minNEntropy / mean only.")
+
         self.condition_id = condition_id
+        self.quest_config = quest_config
+        self.intensity_vals = np.array(quest_config["intensity_vals"], dtype=float)
         self.start_intensity = float(quest_config["start_intensity"])
+        self.n_best = int(quest_config["stim_selection_options"]["N"])
+        self.max_consecutive_reps = int(quest_config["stim_selection_options"]["maxConsecutiveReps"])
+        # recorded in questplus_run-XXX.json so the contrast choices can be replayed
+        self.seed = int(np.random.SeedSequence().entropy) if seed is None else int(seed)
+        self.rng = np.random.default_rng(self.seed)
+
+        threshold, slope, lower_asymptote, lapse_rate = np.meshgrid(
+            np.array(quest_config["threshold_vals"], dtype=float),
+            np.array(quest_config["slope_vals"], dtype=float),
+            np.array(quest_config["lower_asymptote_vals"], dtype=float),
+            np.array(quest_config["lapse_rate_vals"], dtype=float),
+            indexing="ij",
+        )
+        self.threshold_grid = threshold
+        # p(correct) for every intensity x parameter combination
+        self.p_correct = weibull_prob_correct(
+            self.intensity_vals.reshape((-1, 1, 1, 1, 1)),
+            threshold,
+            slope,
+            lower_asymptote,
+            lapse_rate,
+        )
+        # uniform prior
+        self.posterior = np.full(threshold.shape, 1.0 / threshold.size)
+
+        self.selection_count = 0
+        self.history = []  # [{"contrast": c, "response": "Correct" | "Incorrect"}]
         self.observation_count = 0
 
-        self.handler = QuestPlusHandler(
-            nTrials=n_trials,
-            intensityVals=[float(value) for value in quest_config["intensity_vals"]],
-            thresholdVals=[float(value) for value in quest_config["threshold_vals"]],
-            slopeVals=[float(value) for value in quest_config["slope_vals"]],
-            lowerAsymptoteVals=[
-                float(value) for value in quest_config["lower_asymptote_vals"]
-            ],
-            lapseRateVals=[float(value) for value in quest_config["lapse_rate_vals"]],
-            responseVals=list(quest_config["response_vals"]),
-            startIntensity=self.start_intensity,
-            psychometricFunc=quest_config["psychometric_func"],
-            stimScale=quest_config["stim_scale"],
-            stimSelectionMethod=quest_config["stim_selection_method"],
-            stimSelectionOptions=dict(quest_config["stim_selection_options"]),
-            paramEstimationMethod=quest_config["param_estimation_method"],
-        )
-        # StairHandler defaults this unused snapshot label to "2AFC".
-        self.handler.method = "4AFC"
-
     def select_next_target_contrast(self):
-        return float(next(self.handler))
+        self.selection_count += 1
+        if self.selection_count == 1:
+            return self.start_intensity
+
+        expected_entropy = expected_posterior_entropy(self.p_correct, self.posterior)
+        candidate_indices = np.argsort(expected_entropy)[: self.n_best]
+        recent_contrasts = [entry["contrast"] for entry in self.history[-self.max_consecutive_reps:]]
+        while True:
+            contrast = float(self.intensity_vals[self.rng.choice(candidate_indices)])
+            # redraw if this would exceed max_consecutive_reps of the same contrast
+            if len(recent_contrasts) < self.max_consecutive_reps or any(
+                previous != contrast for previous in recent_contrasts
+            ):
+                return contrast
 
     def update(self, target_contrast, correct):
-        response = "Correct" if correct else "Incorrect"
-        self.handler.addResponse(response, intensity=float(target_contrast))
+        intensity_index = self.intensity_index(target_contrast)
+        likelihood = self.p_correct[intensity_index]
+        self.posterior = self.posterior * (likelihood if correct else 1 - likelihood)
+        self.posterior /= self.posterior.sum()
+        self.history.append(
+            {
+                "contrast": float(self.intensity_vals[intensity_index]),
+                "response": self.quest_config["response_vals"][0 if correct else 1],
+            }
+        )
         self.observation_count += 1
 
     def estimated_threshold(self):
         if self.observation_count == 0:
             return self.start_intensity
-        estimate = self.handler.paramEstimate
-        threshold = estimate["threshold"]
-        return float(threshold)
+        return float((self.posterior * self.threshold_grid).sum())
+
+    def threshold_posterior(self):
+        # marginal posterior over threshold_vals
+        return self.posterior.sum(axis=(1, 2, 3))
+
+    def intensity_index(self, contrast):
+        matches = np.flatnonzero(np.isclose(self.intensity_vals, contrast, rtol=0, atol=1e-12))
+        if len(matches) != 1:
+            raise ValueError(f"Contrast {contrast} is not one of the QUEST+ intensity_vals.")
+        return int(matches[0])
+
+
+def weibull_prob_correct(intensity, threshold, slope, lower_asymptote, lapse_rate):
+    # questplus weibull, linear scale: 1 - lapse - (1 - guess - lapse) * exp(-(x / t) ** slope)
+    return 1 - lapse_rate - (1 - lower_asymptote - lapse_rate) * np.exp(
+        -((intensity / threshold) ** slope)
+    )
+
+
+def expected_posterior_entropy(p_correct, posterior):
+    # p_correct: (n_intensities, *grid); posterior: grid. Returns one value per intensity.
+    param_axes = tuple(range(1, p_correct.ndim))
+    expected = np.zeros(p_correct.shape[0])
+    for likelihood in (p_correct, 1 - p_correct):
+        joint = likelihood * posterior
+        outcome_prob = joint.sum(axis=param_axes)
+        new_posterior = joint / outcome_prob.reshape((-1,) + (1,) * len(param_axes))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            terms = np.where(new_posterior > 0, new_posterior * np.log(new_posterior), 0.0)
+        expected += outcome_prob * -terms.sum(axis=param_axes)
+    return expected

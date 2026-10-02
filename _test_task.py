@@ -2,8 +2,10 @@ from collections import Counter
 import json
 import math
 from pathlib import Path
+import random
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -115,7 +117,13 @@ import main
 import stimuli
 from config import block_definitions, condition_event_code_rows
 from hardware import BaseTrigger, TriggerDispatcher
-from task import QUEST_CONFIG, QUEST_INTENSITY_VALS, QuestPlusController, build_event_frame_lists
+from task import (
+    QUEST_CONFIG,
+    QUEST_INTENSITY_VALS,
+    QuestPlusController,
+    build_event_frame_lists,
+    weibull_prob_correct,
+)
 from trials import generate_trials
 
 
@@ -200,12 +208,10 @@ class SoftwareGammaCorrectionTests(unittest.TestCase):
             {contrast: object() for contrast in QUEST_INTENSITY_VALS}
             for _ in range(8)
         ]}
-        controllers = {1: types.SimpleNamespace(
-            handler=types.SimpleNamespace(intensityVals=QUEST_INTENSITY_VALS)
-        )}
+        controllers = {1: types.SimpleNamespace(intensity_vals=QUEST_INTENSITY_VALS)}
         main.check_quest_contrasts_have_stims(stims, controllers)
 
-        controllers[1].handler.intensityVals = QUEST_INTENSITY_VALS + [0.2]
+        controllers[1].intensity_vals = QUEST_INTENSITY_VALS + [0.2]
         with self.assertRaises(ValueError):
             main.check_quest_contrasts_have_stims(stims, controllers)
 
@@ -245,11 +251,146 @@ class SoftwareGammaCorrectionTests(unittest.TestCase):
 
 
 class QuestPlusConfigurationTests(unittest.TestCase):
-    def test_snapshot_method_matches_four_choice_guessing_rate(self):
-        controller = QuestPlusController()
-
-        self.assertEqual(controller.handler.method, "4AFC")
+    def test_guessing_rate_matches_four_choice_task(self):
         self.assertEqual(QUEST_CONFIG["lower_asymptote_vals"], [0.25])
+        self.assertEqual(len(main.contrast_response_keys), 4)
+
+
+def small_quest_config(**overrides):
+    config = dict(QUEST_CONFIG)
+    config.update(overrides)
+    return config
+
+
+def hand_weibull(x, threshold, slope=2, guess=0.25, lapse=0.02):
+    return 1 - lapse - (1 - guess - lapse) * math.exp(-((x / threshold) ** slope))
+
+
+def hand_expected_entropy(intensity_vals, threshold_vals, posterior):
+    # plain-python QUEST+ expected entropy, one value per intensity
+    expected = []
+    for x in intensity_vals:
+        total = 0.0
+        for correct in (True, False):
+            joint = []
+            for t, prior in zip(threshold_vals, posterior):
+                p = hand_weibull(x, t)
+                joint.append(prior * (p if correct else 1 - p))
+            outcome_prob = sum(joint)
+            entropy = -sum((j / outcome_prob) * math.log(j / outcome_prob) for j in joint if j > 0)
+            total += outcome_prob * entropy
+        expected.append(total)
+    return expected
+
+
+class QuestPlusComputationTests(unittest.TestCase):
+    def test_weibull_matches_hand_computed_values(self):
+        # at x = threshold: 1 - 0.02 - 0.73 * e^-1
+        self.assertAlmostEqual(weibull_prob_correct(0.02, 0.02, 2, 0.25, 0.02), 0.711448, places=6)
+        # x = threshold / 2: exp(-0.25); x = 2 * threshold: exp(-4)
+        self.assertAlmostEqual(weibull_prob_correct(0.01, 0.02, 2, 0.25, 0.02), 0.411475, places=6)
+        self.assertAlmostEqual(weibull_prob_correct(0.04, 0.02, 2, 0.25, 0.02), 0.966630, places=6)
+        # asymptotes: guessing at zero contrast, 1 - lapse at high contrast
+        self.assertAlmostEqual(weibull_prob_correct(1e-9, 0.02, 2, 0.25, 0.02), 0.25, places=6)
+        self.assertAlmostEqual(weibull_prob_correct(1.0, 0.02, 2, 0.25, 0.02), 0.98, places=6)
+
+    def test_one_update_matches_hand_computed_posterior(self):
+        controller = QuestPlusController(
+            quest_config=small_quest_config(intensity_vals=[0.02], threshold_vals=[0.01, 0.04]),
+            seed=0,
+        )
+        controller.update(0.02, correct=True)
+        # p(correct | t=0.01) = 0.966630, p(correct | t=0.04) = 0.411475; flat prior
+        self.assertAlmostEqual(controller.threshold_posterior()[0], 0.966630 / 1.378105, places=5)
+        self.assertAlmostEqual(controller.threshold_posterior()[1], 0.411475 / 1.378105, places=5)
+        self.assertAlmostEqual(
+            controller.estimated_threshold(),
+            (0.01 * 0.966630 + 0.04 * 0.411475) / 1.378105,
+            places=6,
+        )
+
+        controller.update(0.02, correct=False)
+        p_low, p_high = 0.966630 * 0.033370, 0.411475 * 0.588525
+        self.assertAlmostEqual(controller.threshold_posterior()[0], p_low / (p_low + p_high), places=5)
+
+    def test_first_selection_is_start_intensity_and_no_update_leaves_estimate(self):
+        controller = QuestPlusController(seed=0)
+        self.assertEqual(controller.select_next_target_contrast(), QUEST_CONFIG["start_intensity"])
+        self.assertEqual(controller.estimated_threshold(), QUEST_CONFIG["start_intensity"])
+        self.assertTrue(np.allclose(controller.threshold_posterior(), 1 / 25))
+
+    def test_selection_draws_from_three_lowest_expected_entropies(self):
+        intensity_vals = [0.005, 0.01, 0.02, 0.04, 0.08]
+        threshold_vals = [0.005, 0.01, 0.02, 0.04, 0.08]
+        controller = QuestPlusController(
+            quest_config=small_quest_config(
+                intensity_vals=intensity_vals,
+                threshold_vals=threshold_vals,
+                start_intensity=0.08,
+            ),
+            seed=1,
+        )
+        for contrast, correct in ((0.08, True), (0.04, True), (0.02, False)):
+            controller.update(contrast, correct)
+        controller.select_next_target_contrast()  # start intensity
+
+        posterior = controller.threshold_posterior()
+        entropies = hand_expected_entropy(intensity_vals, threshold_vals, posterior)
+        best_three = {intensity_vals[i] for i in sorted(range(5), key=entropies.__getitem__)[:3]}
+
+        picks = {controller.select_next_target_contrast() for _ in range(300)}
+        self.assertEqual(picks, best_three)
+
+    def test_selection_never_exceeds_two_consecutive_repeats(self):
+        intensity_vals = [0.005, 0.01, 0.02, 0.04, 0.08]
+        controller = QuestPlusController(
+            quest_config=small_quest_config(
+                intensity_vals=intensity_vals,
+                threshold_vals=intensity_vals,
+                start_intensity=0.08,
+            ),
+            seed=2,
+        )
+        controller.select_next_target_contrast()  # start intensity
+        for _ in range(200):
+            contrast = controller.select_next_target_contrast()
+            last_two = [entry["contrast"] for entry in controller.history[-2:]]
+            if len(last_two) == 2:
+                self.assertFalse(last_two[0] == last_two[1] == contrast)
+            controller.update(contrast, correct=random.random() < 0.6)
+
+    def test_simulated_observer_threshold_is_recovered(self):
+        # 300 staircases of 60 events (one condition, one run) with a known threshold
+        true_threshold = 0.02
+        estimates = []
+        for run in range(300):
+            observer_rng = np.random.default_rng(1000 + run)
+            controller = QuestPlusController(seed=run)
+            for _ in range(60):
+                contrast = controller.select_next_target_contrast()
+                p = weibull_prob_correct(contrast, true_threshold, 2, 0.25, 0.02)
+                controller.update(contrast, correct=observer_rng.random() < p)
+            estimates.append(controller.estimated_threshold())
+        estimates = np.array(estimates)
+
+        self.assertAlmostEqual(np.median(estimates), true_threshold, delta=0.1 * true_threshold)
+        within_25_percent = np.mean(np.abs(estimates / true_threshold - 1) < 0.25)
+        self.assertGreater(within_25_percent, 0.9)
+
+    def test_update_plus_selection_is_well_under_one_frame(self):
+        controller = QuestPlusController(seed=0)
+        controller.select_next_target_contrast()
+        durations_ms = []
+        for _ in range(60):
+            start_s = time.perf_counter()
+            contrast = controller.select_next_target_contrast()
+            controller.update(contrast, correct=random.random() < 0.6)
+            durations_ms.append((time.perf_counter() - start_s) * 1000)
+        print(
+            f"\nQUEST+ update + selection: median {np.median(durations_ms):.3f} ms, "
+            f"max {max(durations_ms):.3f} ms"
+        )
+        self.assertLess(np.median(durations_ms), 1.0)
 
 
 class ContrastEventSchedulerTests(unittest.TestCase):
@@ -555,26 +696,13 @@ class TrialLoggingTests(unittest.TestCase):
 
 
 class SessionMetadataTests(unittest.TestCase):
-    def test_quest_handlers_are_saved_in_one_run_file(self):
-        class FakeHandler:
-            def __init__(self, condition_id):
-                self.condition_id = condition_id
-                self.calls = []
-
-            def saveAsJson(self, fileName=None):
-                self.calls.append(fileName)
-                return json.dumps(
-                    {
-                        "__instance_type__": ["psychopy.data.staircase", "QuestPlusHandler"],
-                        "attributes": {"condition_id": self.condition_id},
-                    }
-                )
-
-        handlers = {condition_id: FakeHandler(condition_id) for condition_id in (1, 2)}
+    def test_quest_controllers_are_saved_in_one_run_file(self):
         controllers = {
-            condition_id: types.SimpleNamespace(handler=handler)
-            for condition_id, handler in handlers.items()
+            condition_id: QuestPlusController(condition_id=condition_id, seed=condition_id)
+            for condition_id in (1, 2)
         }
+        controllers[2].update(0.1, correct=True)
+        controllers[2].update(0.1, correct=False)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             metadata_dir = Path(temp_dir)
@@ -588,15 +716,20 @@ class SessionMetadataTests(unittest.TestCase):
 
         self.assertEqual([path.name for path in saved_paths], ["questplus_run-003.json"])
         self.assertEqual(snapshot["run_id"], "003")
+        self.assertEqual(list(snapshot["conditions"]), ["condition_01", "condition_02"])
+        condition = snapshot["conditions"]["condition_02"]
+        self.assertEqual(condition["settings"], json.loads(json.dumps(QUEST_CONFIG)))
+        self.assertEqual(condition["seed"], 2)
         self.assertEqual(
-            list(snapshot["conditions"]),
-            ["condition_01", "condition_02"],
+            condition["trials"],
+            [{"contrast": 0.1, "response": "Correct"}, {"contrast": 0.1, "response": "Incorrect"}],
         )
-        self.assertEqual(
-            snapshot["conditions"]["condition_02"]["attributes"]["condition_id"],
-            2,
+        self.assertEqual(condition["threshold_vals"], QUEST_CONFIG["threshold_vals"])
+        self.assertAlmostEqual(sum(condition["threshold_posterior"]), 1.0)
+        self.assertAlmostEqual(
+            condition["estimated_threshold"], controllers[2].estimated_threshold()
         )
-        self.assertTrue(all(handler.calls == [None] for handler in handlers.values()))
+        self.assertEqual(snapshot["conditions"]["condition_01"]["trials"], [])
 
     def test_experiment_handler_disables_automatic_csv_save(self):
         handler = types.SimpleNamespace(dataNames=[])
