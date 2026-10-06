@@ -20,6 +20,7 @@ _required_local_settings = (
     "viewing_distance_cm",
     "fullscreen",
     "display_gamma",
+    "audio_device",
 )
 _missing_local_settings = [
     name for name in _required_local_settings if name not in globals()
@@ -102,7 +103,7 @@ photocell_box_pos_deg = (27, -15.0)
 
 # --- trials ---
 trial_duration_s = 10.6667
-iti_duration_s = 2
+iti_duration_s = 6
 
 task_instruction_text = (
     "Maintain fixation on the white cross in the center of the screen.\n\n"
@@ -119,6 +120,17 @@ block_definitions = [
         "trials_per_condition": 10,
     },
 ]
+
+# --- conditioning ---
+cs_orientations_deg = (45, 135)  # center orientations; CS+ drawn at random per participant
+us_count_per_cs_plus_condition = 7
+max_consecutive_unreinforced_cs_plus = 2  # counted across CS+ trials, skipping CS- trials
+
+# --- unconditioned stimulus (white noise burst) ---
+us_duration_s = 1.0
+us_amplitude = 0.5  # digital amplitude (0-1); 96 dB target not yet calibrated
+us_sample_rate_hz = 48000
+assert us_duration_s < iti_duration_s  # noise plays inside the ITI
 
 # --- task ---
 contrast_task_eligible_eccentricities = [7.1]
@@ -147,13 +159,15 @@ assert frame_marker_interval % frames_per_reversal(refresh_hz, center_flicker_hz
 assert frame_marker_interval % frames_per_reversal(refresh_hz, surround_flicker_hz) == 0
 
 # --- event codes ---
-frame_marker_code = 8
-stimulus_offset_code = 16
+# one bit per code so overlapping events stay decodable on FIO0-FIO7
+frame_marker_code = 64
+stimulus_offset_code = 128
+us_offset_code = 128  # second 128 on reinforced trials, sent at noise offset
 condition_event_code_rows = [
-    {"condition_id": 1, "center_orientation": 45,  "surround_orientation": None},
-    {"condition_id": 2, "center_orientation": 45,  "surround_orientation": 45},
-    {"condition_id": 3, "center_orientation": 45,  "surround_orientation": 135},
-#    {"condition_id": 4, "center_orientation": 135, "surround_orientation": None},
-#    {"condition_id": 5, "center_orientation": 135, "surround_orientation": 45},
-#    {"condition_id": 6, "center_orientation": 135, "surround_orientation": 135},
+    {"condition_id": 1, "event_code": 1,  "center_orientation": 45,  "surround_orientation": None},
+    {"condition_id": 2, "event_code": 2,  "center_orientation": 45,  "surround_orientation": 45},
+    {"condition_id": 3, "event_code": 4,  "center_orientation": 45,  "surround_orientation": 135},
+    {"condition_id": 4, "event_code": 8,  "center_orientation": 135, "surround_orientation": None},
+    {"condition_id": 5, "event_code": 16, "center_orientation": 135, "surround_orientation": 45},
+    {"condition_id": 6, "event_code": 32, "center_orientation": 135, "surround_orientation": 135},
 ]

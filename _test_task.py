@@ -124,7 +124,7 @@ from task import (
     build_event_frame_lists,
     weibull_prob_correct,
 )
-from trials import generate_trials
+from trials import generate_trial_schedule, generate_trials
 
 
 class DisplaySetupTests(unittest.TestCase):
@@ -138,7 +138,7 @@ class DisplaySetupTests(unittest.TestCase):
             result = main.setup_display()
 
         self.assertEqual(result, (win, stims, 120.0))
-        self.assertEqual(make_window.call_args.kwargs["screen"], 1)
+        self.assertEqual(make_window.call_args.kwargs["screen"], main.screen_index)
 
 
 class SoftwareGammaCorrectionTests(unittest.TestCase):
@@ -238,6 +238,9 @@ class SoftwareGammaCorrectionTests(unittest.TestCase):
             refresh_hz=120,
             code_version={"commit": "abc", "dirty": False, "diff": ""},
             gl_vendor="nvidia corporation",
+            trial_schedule=generate_trial_schedule(refresh_hz=120, seed=0),
+            trial_schedule_path=Path("sub-subj_trial_schedule.json"),
+            audio_device_name="test audio device",
         )
         hardware = session_info["hardware"]
 
@@ -646,7 +649,7 @@ class TrialLoggingTests(unittest.TestCase):
             def nextEntry(self):
                 self.entry_count += 1
 
-        trial = generate_trials(refresh_hz=120, shuffle=False)[0]
+        trial = generate_trials(refresh_hz=120, cs_plus_orientation=45, shuffle=False)[0]
         original_trial = dict(trial)
         events = [
             {
@@ -771,6 +774,9 @@ class SessionMetadataTests(unittest.TestCase):
             refresh_hz=120.0,
             code_version={"commit": "abc", "dirty": False, "diff": ""},
             gl_vendor="nvidia corporation",
+            trial_schedule=generate_trial_schedule(refresh_hz=120, seed=0),
+            trial_schedule_path=Path("sub-subj_trial_schedule.json"),
+            audio_device_name="test audio device",
         )
 
         self.assertEqual(
@@ -805,7 +811,7 @@ class SessionMetadataTests(unittest.TestCase):
 
 class TrialGenerationTests(unittest.TestCase):
     def test_single_task_block_has_configured_trials_per_condition(self):
-        trials = generate_trials(refresh_hz=120)
+        trials = generate_trials(refresh_hz=120, cs_plus_orientation=45)
         trials_per_condition = block_definitions[0]["trials_per_condition"]
         condition_ids = [row["condition_id"] for row in condition_event_code_rows]
 
@@ -912,6 +918,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
     def make_trial(self, **overrides):
         trial = {
             "condition_id": 7,
+            "event_code": 4,
             "surround_orientation": None,
             "center_contrast": 0.4,
             "surround_contrast": 0.0,
@@ -955,7 +962,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
             [
                 ("scheduled", "send_code"),
                 ("flip", 1),
-                ("send_code", 7),
+                ("send_code", 4),
                 ("scheduled", "send_code"),
                 ("flip", 1),
                 ("send_code", 0),
@@ -971,7 +978,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
                 ("send_code", 0),
             ],
         )
-        self.assertEqual(trigger.codes, [7, 0, main.frame_marker_code, 0])
+        self.assertEqual(trigger.codes, [4, 0, main.frame_marker_code, 0])
 
 
 

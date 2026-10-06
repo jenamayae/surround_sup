@@ -11,6 +11,7 @@ import numpy as np
 from psychopy import core, data, event, gui, visual
 
 from config import (
+    audio_device,
     calibration_mode,
     center_change_count_per_trial,
     center_change_duration_sign_reversals,
@@ -23,12 +24,14 @@ from config import (
     contrast_change_start_s,
     contrast_response_keys,
     contrast_task_eligible_eccentricities,
+    cs_orientations_deg,
     display_gamma,
     fixation_red_duration_s,
     frame_marker_code,
     frame_marker_interval,
     fullscreen,
     iti_duration_s,
+    max_consecutive_unreinforced_cs_plus,
     monitor_name,
     monitor_pixels,
     monitor_width_cm,
@@ -42,11 +45,19 @@ from config import (
     surround_sf,
     task_instruction_text,
     trial_duration_s,
+    us_amplitude,
+    us_count_per_cs_plus_condition,
+    us_duration_s,
+    us_offset_code,
+    us_sample_rate_hz,
     viewing_distance_cm,
 )
 from hardware import (
     LabjackFio8BitTrigger,
     SimulatedLabjackFio8BitTrigger,
+    find_audio_output_device_name,
+    make_us_sound,
+    make_white_noise,
 )
 from stimuli import (
     draw_stimulus,
@@ -66,7 +77,7 @@ from task import (
     response_key_to_quadrant,
     score_quadrant_response,
 )
-from trials import generate_trials
+from trials import load_or_generate_trial_schedule
 
 
 def hardware_gamma_ramp_max_deviation(ramp):
@@ -110,6 +121,23 @@ def setup_display():
     return win, stims, refresh_hz
 
 
+def setup_us_sound(noise_seed):
+    device_name = find_audio_output_device_name(audio_device)
+    # audio prefs must be set before psychopy.sound is first imported
+    from psychopy import prefs
+    prefs.hardware["audioLib"] = ["ptb"]
+    prefs.hardware["audioDevice"] = device_name
+    from psychopy import sound
+
+    samples = make_white_noise(
+        duration_s=us_duration_s,
+        amplitude=us_amplitude,
+        sample_rate_hz=us_sample_rate_hz,
+        seed=noise_seed,
+    )
+    return make_us_sound(sound, samples, us_sample_rate_hz), device_name
+
+
 def prepare_run_paths(exp_info):
     run_root = Path("data") / f"sub-{exp_info['subject']}" / f"ses-{exp_info['session']}"
     rawdata_dir = run_root / "rawdata"
@@ -128,6 +156,9 @@ def prepare_run_paths(exp_info):
         "derivatives_dir": derivatives_dir,
         "session_info_path": metadata_dir / f"session_info_run-{run_id}.json",
         "trial_conditions_path": metadata_dir / f"trial_conditions_run-{run_id}",
+        "trial_schedule_path": (
+            run_root.parent / f"sub-{exp_info['subject']}_trial_schedule.json"
+        ),
     }
 
 
@@ -174,7 +205,16 @@ def write_session_info_json(path, session_info):
     path.write_text(json.dumps(session_info, indent=2) + "\n")
 
 
-def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_vendor):
+def make_session_info(
+    exp_info,
+    datetime_start,
+    refresh_hz,
+    code_version,
+    gl_vendor,
+    trial_schedule,
+    trial_schedule_path,
+    audio_device_name,
+):
     return {
         "participant": {
             "sub_id": exp_info["subject"],
@@ -205,6 +245,23 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_ven
             "center_change_duration_sign_reversals": center_change_duration_sign_reversals,
             "center_change_duration_aligned_s": center_change_duration_aligned_s(),
             "fixation_red_duration_s": fixation_red_duration_s,
+        },
+        "conditioning": {
+            "cs_orientations_deg": cs_orientations_deg,
+            "cs_plus_orientation": trial_schedule["cs_plus_orientation"],
+            "cs_minus_orientation": trial_schedule["cs_minus_orientation"],
+            "trial_schedule_path": str(trial_schedule_path),
+            "trial_schedule_seed": trial_schedule["seed"],
+            "us_count_per_cs_plus_condition": us_count_per_cs_plus_condition,
+            "max_consecutive_unreinforced_cs_plus": max_consecutive_unreinforced_cs_plus,
+            "us_type": "uniform white noise, identical on both channels, no onset ramp",
+            "us_duration_s": us_duration_s,
+            "us_amplitude": us_amplitude,
+            "us_sample_rate_hz": us_sample_rate_hz,
+            "us_noise_seed": trial_schedule["seed"],
+            "us_onset": "scheduled for the first ITI flip (same flip as stimulus_offset_code)",
+            "audio_backend": "ptb",
+            "audio_device_name": audio_device_name,
         },
         "quest configs": {
             "quest_intensity_definition": "absolute_target_contrast",
@@ -245,6 +302,7 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_ven
         "events": {
             "calibration_mode": calibration_mode,
             "stimulus_offset_code": stimulus_offset_code,
+            "us_offset_code": us_offset_code,
             "frame_marker_code": frame_marker_code,
             "frame_marker_interval": frame_marker_interval,
             "trigger_pulse": "set on flip, cleared on next flip (1 frame)",
@@ -566,7 +624,7 @@ def run_trial(
 
         code = None
         if frame_num == 0:
-            code = trial["condition_id"]
+            code = trial["event_code"]
         elif frame_num % frame_marker_interval == 0:
             code = frame_marker_code
         if trigger is not None:
@@ -597,8 +655,19 @@ def run_trial(
     return trial_events
 
 
-def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
+def run_iti(
+    win,
+    stims,
+    iti_duration_s,
+    refresh_hz,
+    trigger=None,
+    reinforced=False,
+    us_sound=None,
+):
     n_frames = round(iti_duration_s * refresh_hz)
+    us_offset_frame = round(us_duration_s * refresh_hz)
+    if reinforced and us_sound is None:
+        raise ValueError("Reinforced trial reached the ITI without a US sound.")
 
     event.clearEvents(eventType="keyboard")
 
@@ -609,9 +678,17 @@ def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
             stims["photocell_box"].contrast = -1.0
             stims["photocell_box"].draw()
 
+        # noise onset is scheduled on the audio clock for the same flip as the offset code
+        if reinforced and frame_index == 0:
+            us_sound.play(when=win.getFutureFlipTime(clock="ptb"))
+
         if trigger is not None and frame_index == 0:
             win.callOnFlip(trigger.send_code, stimulus_offset_code)
         elif trigger is not None and frame_index == 1:
+            win.callOnFlip(trigger.send_code, 0)
+        elif trigger is not None and reinforced and frame_index == us_offset_frame:
+            win.callOnFlip(trigger.send_code, us_offset_code)
+        elif trigger is not None and reinforced and frame_index == us_offset_frame + 1:
             win.callOnFlip(trigger.send_code, 0)
         win.flip()
         # automatic gc is off during the run; collect once the offset trigger is cleared
@@ -619,6 +696,10 @@ def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
             gc.collect()
 
         handle_runtime_keys(win)
+
+    # stop well after the noise has ended so the next play() starts cleanly
+    if reinforced:
+        us_sound.stop()
 
 
 def log_trial(
@@ -635,6 +716,9 @@ def log_trial(
         "trial_num": trial_num,
         "block_name": trial["block_name"],
         "condition_id": trial["condition_id"],
+        "event_code": trial["event_code"],
+        "cs_type": trial["cs_type"],
+        "reinforced": trial["reinforced"],
         "center_orientation": trial["center_orientation"],
         "center_contrast": trial["center_contrast"],
         "surround_present": surround_present,
@@ -671,9 +755,10 @@ def run_experiment_trials(
     trigger,
     quest_controllers,
     frame_interval_log,
+    trials,
+    us_sound,
 ):
     current_block_name = None
-    trials = generate_trials(refresh_hz=refresh_hz)
     # gc pauses can drop frames; collection runs manually in each ITI instead
     gc.disable()
 
@@ -709,6 +794,8 @@ def run_experiment_trials(
             iti_duration_s=iti_duration_s,
             refresh_hz=refresh_hz,
             trigger=trigger,
+            reinforced=trial["reinforced"],
+            us_sound=us_sound,
         )
 
         log_trial(
@@ -764,6 +851,10 @@ def main():
     run_paths = prepare_run_paths(exp_info)
     exp = make_experiment_handler(exp_info, run_paths)
     win, stims, refresh_hz = setup_display()
+    trial_schedule = load_or_generate_trial_schedule(
+        run_paths["trial_schedule_path"], refresh_hz
+    )
+    us_sound, audio_device_name = setup_us_sound(noise_seed=trial_schedule["seed"])
     quest_controllers = make_quest_controllers()
     check_quest_contrasts_have_stims(stims, quest_controllers)
 
@@ -773,6 +864,9 @@ def main():
         refresh_hz,
         code_version=code_version,
         gl_vendor=win.glVendor,
+        trial_schedule=trial_schedule,
+        trial_schedule_path=run_paths["trial_schedule_path"],
+        audio_device_name=audio_device_name,
     )
     write_session_info_json(run_paths["session_info_path"], session_info)
 
@@ -792,6 +886,8 @@ def main():
             trigger=trigger_backend,
             quest_controllers=quest_controllers,
             frame_interval_log=frame_interval_log,
+            trials=trial_schedule["trials"],
+            us_sound=us_sound,
         )
         show_message(win, "End of experiment. Thank you!\nPress SPACE to exit.")
     except ExperimentQuit:

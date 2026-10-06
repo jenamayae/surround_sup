@@ -8,6 +8,8 @@ import queue
 import threading
 import time
 
+import numpy as np
+
 from config import (
     frame_marker_code,
     frame_marker_interval,
@@ -329,3 +331,48 @@ def maybe_send_frame_marker(
         )
         return True
     return False
+
+
+def find_audio_output_device_name(device_substring):
+    """Return the one WASAPI output device whose name contains device_substring."""
+    from psychtoolbox import audio
+
+    output_devices = [
+        device for device in audio.get_devices() if device["NrOutputChannels"] > 0
+    ]
+    # WASAPI is the low-latency Windows host API psychtoolbox uses
+    matches = [
+        device for device in output_devices
+        if device_substring in device["DeviceName"]
+        and "WASAPI" in device["HostAudioAPIName"]
+    ]
+    if len(matches) != 1:
+        device_list = "\n".join(
+            f"  {device['HostAudioAPIName']}: {device['DeviceName']}"
+            for device in output_devices
+        )
+        raise RuntimeError(
+            f"Expected exactly one WASAPI output device containing '{device_substring}', "
+            f"found {len(matches)}. Set audio_device in config_local.py. "
+            f"Output devices:\n{device_list}"
+        )
+    return matches[0]["DeviceName"]
+
+
+def make_white_noise(duration_s, amplitude, sample_rate_hz, seed):
+    """Uniform white noise in [-amplitude, amplitude], same signal on both channels."""
+    rng = np.random.default_rng(seed)
+    sample_count = round(duration_s * sample_rate_hz)
+    mono = rng.uniform(-amplitude, amplitude, size=sample_count)
+    return np.column_stack([mono, mono])
+
+
+def make_us_sound(sound_module, samples, sample_rate_hz):
+    # hamming=False: PsychoPy otherwise ramps onset/offset; the US starts at full level
+    return sound_module.Sound(
+        value=samples,
+        sampleRate=sample_rate_hz,
+        stereo=True,
+        hamming=False,
+    )
+
