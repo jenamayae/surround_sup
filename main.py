@@ -566,7 +566,7 @@ def run_trial(
 
         code = None
         if frame_num == 0:
-            code = trial["condition_id"]
+            code = trial["event_code"]
         elif frame_num % frame_marker_interval == 0:
             code = frame_marker_code
         if trigger is not None:

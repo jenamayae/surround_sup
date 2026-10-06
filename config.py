@@ -147,13 +147,14 @@ assert frame_marker_interval % frames_per_reversal(refresh_hz, center_flicker_hz
 assert frame_marker_interval % frames_per_reversal(refresh_hz, surround_flicker_hz) == 0
 
 # --- event codes ---
-frame_marker_code = 8
-stimulus_offset_code = 16
+# one bit per code so overlapping events stay decodable on FIO0-FIO7
+frame_marker_code = 64
+stimulus_offset_code = 128
 condition_event_code_rows = [
-    {"condition_id": 1, "center_orientation": 45,  "surround_orientation": None},
-    {"condition_id": 2, "center_orientation": 45,  "surround_orientation": 45},
-    {"condition_id": 3, "center_orientation": 45,  "surround_orientation": 135},
-#    {"condition_id": 4, "center_orientation": 135, "surround_orientation": None},
-#    {"condition_id": 5, "center_orientation": 135, "surround_orientation": 45},
-#    {"condition_id": 6, "center_orientation": 135, "surround_orientation": 135},
+    {"condition_id": 1, "event_code": 1,  "center_orientation": 45,  "surround_orientation": None},
+    {"condition_id": 2, "event_code": 2,  "center_orientation": 45,  "surround_orientation": 45},
+    {"condition_id": 3, "event_code": 4,  "center_orientation": 45,  "surround_orientation": 135},
+#    {"condition_id": 4, "event_code": 8,  "center_orientation": 135, "surround_orientation": None},
+#    {"condition_id": 5, "event_code": 16, "center_orientation": 135, "surround_orientation": 45},
+#    {"condition_id": 6, "event_code": 32, "center_orientation": 135, "surround_orientation": 135},
 ]

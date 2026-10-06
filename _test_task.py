@@ -912,6 +912,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
     def make_trial(self, **overrides):
         trial = {
             "condition_id": 7,
+            "event_code": 4,
             "surround_orientation": None,
             "center_contrast": 0.4,
             "surround_contrast": 0.0,
@@ -955,7 +956,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
             [
                 ("scheduled", "send_code"),
                 ("flip", 1),
-                ("send_code", 7),
+                ("send_code", 4),
                 ("scheduled", "send_code"),
                 ("flip", 1),
                 ("send_code", 0),
@@ -971,7 +972,7 @@ class CallOnFlipHardwareSchedulingTests(unittest.TestCase):
                 ("send_code", 0),
             ],
         )
-        self.assertEqual(trigger.codes, [7, 0, main.frame_marker_code, 0])
+        self.assertEqual(trigger.codes, [4, 0, main.frame_marker_code, 0])
 
 
 

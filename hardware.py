@@ -302,7 +302,7 @@ def send_trial_start_codes(
 ):
     """Send the condition-specific trial-start marker."""
     dispatcher.submit(
-        trial["condition_id"],
+        trial["event_code"],
         label="trial_start",
         frame_num=frame_num,
         trial_num=trial_num,

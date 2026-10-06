@@ -17,6 +17,7 @@ def build_base_trial(condition_row, refresh_hz):
     )
     return {
         "condition_id": condition_row["condition_id"],
+        "event_code": condition_row["event_code"],
         "center_orientation": condition_row["center_orientation"],
         "surround_orientation": condition_row["surround_orientation"],
         "center_contrast": center_contrast,
