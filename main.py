@@ -68,6 +68,8 @@ from task import (
 )
 from trials import generate_trials
 
+DATA_DIR = Path(__file__).resolve().parent / "data"
+
 
 def hardware_gamma_ramp_max_deviation(ramp):
     # ramp: 3 x 256 uint16 from GetDeviceGammaRamp; identity is i / 255 * 65535
@@ -111,7 +113,7 @@ def setup_display():
 
 
 def prepare_run_paths(exp_info):
-    run_root = Path("data") / f"sub-{exp_info['subject']}" / f"ses-{exp_info['session']}"
+    run_root = DATA_DIR / f"sub-{exp_info['subject']}" / f"ses-{exp_info['session']}"
     rawdata_dir = run_root / "rawdata"
     metadata_dir = run_root / "metadata"
     derivatives_dir = run_root / "derivatives"
@@ -132,7 +134,7 @@ def prepare_run_paths(exp_info):
 
 
 def get_next_run_id(sub_id, ses_id):
-    metadata_dir = Path("data") / f"sub-{sub_id}" / f"ses-{ses_id}" / "metadata"
+    metadata_dir = DATA_DIR / f"sub-{sub_id}" / f"ses-{ses_id}" / "metadata"
     if not metadata_dir.exists():
         return "001"
 
