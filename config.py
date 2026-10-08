@@ -32,8 +32,8 @@ if _missing_local_settings:
     )
 
 # --- stimulation frequencies ---
-center_flicker_hz = 6
-surround_flicker_hz = 7.5
+center_flicker_hz = 12
+surround_flicker_hz = 7.50
 
 def frames_per_reversal(refresh_hz, flicker_hz):
     frames = refresh_hz / flicker_hz
@@ -90,7 +90,7 @@ surround_diameter_deg = 28
 surround_sf = 1.0
 
 # --- contrasts ---
-center_contrast = 0.05
+center_contrast = 0.10
 surround_contrast = 1.0
 
 # --- mask ---
@@ -125,7 +125,7 @@ contrast_task_eligible_eccentricities = [7.1]
 contrast_change_start_s = 1
 contrast_change_interval_s = 1.7
 center_change_count_per_trial = 6
-center_change_duration_sign_reversals = 1
+center_change_duration_sign_reversals = 2
 fixation_red_duration_s = 0.333
 contrast_response_keys = {
     "upper_left": "7",

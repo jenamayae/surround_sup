@@ -292,6 +292,17 @@ def check_quest_contrasts_have_stims(stims, quest_controllers):
                 stim_for_contrast(stims["centers"][center_index], intensity)
 
 
+def warm_up_target_gratings(win, stims):
+    """Draw every target grating once off-screen so first-draw costs don't land on target onsets."""
+    center_orientations = {row["center_orientation"] for row in condition_event_code_rows}
+    for center_index in eligible_center_indices():
+        for center in stims["centers"][center_index].values():
+            for orientation in center_orientations:
+                center.ori = orientation
+                center.draw()
+    win.clearBuffer()  # discard the warm-up drawing; nothing is flipped to the screen
+
+
 def save_questplus_handlers(quest_controllers, run_paths, run_id):
     condition_snapshots = {}
     for condition_id, quest_controller in sorted(quest_controllers.items()):
@@ -768,6 +779,7 @@ def main():
     win, stims, refresh_hz = setup_display()
     quest_controllers = make_quest_controllers()
     check_quest_contrasts_have_stims(stims, quest_controllers)
+    warm_up_target_gratings(win, stims)
 
     session_info = make_session_info(
         exp_info,
