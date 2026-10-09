@@ -2,9 +2,7 @@ import random
 
 from config import (
     block_definitions,
-    center_contrast,
     condition_event_code_rows,
-    surround_contrast,
     trial_duration_s,
 )
 from task import sample_trial_task
@@ -20,8 +18,8 @@ def build_base_trial(condition_row, refresh_hz):
         "event_code": condition_row["event_code"],
         "center_orientation": condition_row["center_orientation"],
         "surround_orientation": condition_row["surround_orientation"],
-        "center_contrast": center_contrast,
-        "surround_contrast": surround_contrast,
+        "center_contrast": condition_row["center_contrast"],
+        "surround_contrast": condition_row["surround_contrast"],
         **task_info,
     }
 

@@ -4,19 +4,18 @@ from psychopy.visual.grating import GratingStim
 
 from config import (
     calibration_mode,
-    center_contrast,
     center_diameter_deg,
     center_flicker_hz,
     center_holes_diameter_deg,
     center_positions_deg,
     center_sf,
+    condition_event_code_rows,
     display_gamma,
     frames_per_reversal,
     photocell_box_pos_deg,
     photocell_box_size_deg,
     raised_cos_fringe,
     raised_cos_fringe_params,
-    surround_contrast,
     surround_diameter_deg,
     surround_flicker_hz,
     surround_sf,
@@ -121,11 +120,18 @@ def make_stimuli(win):
         autoLog=False,
     )
 
+    center_contrasts = {row["center_contrast"] for row in condition_event_code_rows}
+    surround_contrasts = {
+        row["surround_contrast"]
+        for row in condition_event_code_rows
+        if row["surround_orientation"] is not None
+    }
+
     centers = []
     center_holes = []
     for center_index, pos in enumerate(center_positions_deg):
         # one stim per contrast this center can show, textures uploaded once here
-        contrasts = [center_contrast]
+        contrasts = list(center_contrasts)
         if center_index in task_center_indices:
             contrasts += QUEST_INTENSITY_VALS
         centers.append(
@@ -161,9 +167,9 @@ def make_stimuli(win):
         )
 
     surround = {
-        surround_contrast: GratingStim(
+        contrast: GratingStim(
             win=win,
-            tex=grating_texture(surround_contrast),
+            tex=grating_texture(contrast),
             mask=raised_cos_fringe,
             maskParams=raised_cos_fringe_params,
             size=surround_diameter_deg,
@@ -174,6 +180,7 @@ def make_stimuli(win):
             pos=(0, 0),
             autoLog=False,
         )
+        for contrast in surround_contrasts
     }
 
     photocell_box = GratingStim(
@@ -213,8 +220,8 @@ def draw_stimulus(
     refresh_hz,
     surround_orientation,
     center_contrast,
+    surround_contrast,
     fixation_color="white",
-    surround_contrast=surround_contrast,
     center_flicker_hz=center_flicker_hz,
     surround_flicker_hz=surround_flicker_hz,
     task_center_indices=(),

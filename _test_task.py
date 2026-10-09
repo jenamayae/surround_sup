@@ -143,7 +143,9 @@ class DisplaySetupTests(unittest.TestCase):
 
 class SoftwareGammaCorrectionTests(unittest.TestCase):
     def grating_contrasts(self):
-        return QUEST_INTENSITY_VALS + [stimuli.center_contrast, stimuli.surround_contrast]
+        condition_contrasts = [row["center_contrast"] for row in condition_event_code_rows]
+        condition_contrasts += [row["surround_contrast"] for row in condition_event_code_rows]
+        return QUEST_INTENSITY_VALS + condition_contrasts
 
     def texture_luminance(self, texture):
         return ((texture.astype(float) + 1) / 2) ** stimuli.display_gamma
@@ -480,7 +482,7 @@ def make_recording_stims(center_count=8, center_contrasts=(0.2, 0.08)):
             for _ in range(center_count)
         ],
         "center_holes": [RecordingStim() for _ in range(center_count)],
-        "surround": {stimuli.surround_contrast: RecordingStim()},
+        "surround": {1.0: RecordingStim()},
         "photocell_box": RecordingStim(),
     }
 
@@ -501,6 +503,7 @@ class ContrastDetectionRenderingTests(unittest.TestCase):
                     refresh_hz=60,
                     surround_orientation=surround_orientation,
                     center_contrast=0.2,
+                    surround_contrast=1.0,
                     task_center_indices=task_center_indices,
                 )
 
@@ -525,6 +528,7 @@ class ContrastDetectionRenderingTests(unittest.TestCase):
             refresh_hz=60,
             surround_orientation=None,
             center_contrast=0.2,
+            surround_contrast=0,
             task_center_indices=[4, 5, 6, 7],
             target_index=5,
             target_contrast=0.08,
