@@ -150,7 +150,7 @@ condition_event_code_rows = [
     {"condition_id": 1, "event_code": 1,  "center_orientation": 45,  "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0},
     {"condition_id": 2, "event_code": 2,  "center_orientation": 45,  "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 0.70},
     {"condition_id": 3, "event_code": 4,  "center_orientation": 45,  "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 0.70},
-#    {"condition_id": 4, "event_code": 8,  "center_orientation": 45, "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0},
-    {"condition_id": 5, "event_code": 16, "center_orientation": 45, "surround_orientation": 45,   "center_contrast": 0.07, "surround_contrast": 0.60},
-    {"condition_id": 6, "event_code": 32, "center_orientation": 45, "surround_orientation": 135,  "center_contrast": 0.07, "surround_contrast": 0.60},
+    {"condition_id": 4, "event_code": 8,  "center_orientation": 45, "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0.50},
+    {"condition_id": 5, "event_code": 16, "center_orientation": 45, "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 0.50},
+    {"condition_id": 6, "event_code": 32, "center_orientation": 45, "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 0.50},
 ]
