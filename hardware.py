@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import csv
 import logging
 import queue
 import threading
 import time
 
 from config import (
+    eyetracker_gaze_output_hz,
+    eyetracker_serial,
     frame_marker_code,
     frame_marker_interval,
     labjack_connection_type,
@@ -20,6 +23,38 @@ from config import (
     trigger_min_gap_s,
     trigger_pulse_width_s,
 )
+
+# gaze x/y: Tobii display-area coordinates (0-1, origin top-left)
+# gaze origin: eye position in Tobii user coordinates (mm, origin at tracker center, z toward the participant)
+eyetracking_sample_columns = [
+    "device_time_stamp_us",
+    "system_time_stamp_us",
+    "left_gaze_x_display",
+    "left_gaze_y_display",
+    "left_gaze_validity",
+    "right_gaze_x_display",
+    "right_gaze_y_display",
+    "right_gaze_validity",
+    "left_pupil_diameter_mm",
+    "left_pupil_validity",
+    "right_pupil_diameter_mm",
+    "right_pupil_validity",
+    "left_gaze_origin_x_mm",
+    "left_gaze_origin_y_mm",
+    "left_gaze_origin_z_mm",
+    "left_gaze_origin_validity",
+    "right_gaze_origin_x_mm",
+    "right_gaze_origin_y_mm",
+    "right_gaze_origin_z_mm",
+    "right_gaze_origin_validity",
+]
+eyetracking_event_columns = [
+    "system_time_stamp_us",
+    "label",
+    "code",
+    "trial_num",
+    "frame_num",
+]
 
 
 class BaseTrigger:
@@ -260,6 +295,106 @@ class SimulatedLabjackFio8BitTrigger(BaseTrigger):
             self.last_clear_time = time.perf_counter()
 
 
+class TobiiEyeTracker:
+    """Record Tobii gaze, pupil and eye-position samples plus flip-locked event times."""
+
+    def __init__(
+        self,
+        serial=eyetracker_serial,
+        expected_gaze_output_hz=eyetracker_gaze_output_hz,
+    ):
+        self.serial = serial
+        self.expected_gaze_output_hz = expected_gaze_output_hz
+        self.tr = None
+        self.eyetracker = None
+        self.info = None
+        self.buffer_lock = threading.Lock()
+        self.samples = []
+        self.events = []
+
+    def open(self):
+        """Find the tracker by serial, check its frequency, and start gaze recording."""
+        if self.eyetracker is not None:
+            return
+
+        try:
+            import tobii_research as tr
+        except ImportError as exc:
+            raise RuntimeError("Could not import tobii_research. Install with: pip install tobii-research") from exc
+
+        self.tr = tr
+        matches = [et for et in tr.find_all_eyetrackers() if et.serial_number == self.serial]
+        if not matches:
+            raise RuntimeError(f"Eye tracker with serial {self.serial} not found.")
+        eyetracker = matches[0]
+
+        gaze_output_hz = eyetracker.get_gaze_output_frequency()
+        if abs(gaze_output_hz - self.expected_gaze_output_hz) > 0.5:
+            raise RuntimeError(
+                f"Eye tracker frequency is {gaze_output_hz} Hz but eyetracker_gaze_output_hz is "
+                f"{self.expected_gaze_output_hz} Hz. Set Frequency in Eye Tracker Manager."
+            )
+
+        self.info = {
+            "model": eyetracker.model,
+            "serial_number": eyetracker.serial_number,
+            "firmware_version": eyetracker.firmware_version,
+            "device_name": eyetracker.device_name,
+            "address": eyetracker.address,
+            "gaze_output_hz": gaze_output_hz,
+            "sdk_version": str(getattr(tr, "__version__", "unknown")),
+        }
+        self.eyetracker = eyetracker
+        eyetracker.subscribe_to(tr.EYETRACKER_GAZE_DATA, self.on_gaze_sample, as_dictionary=True)
+        logging.info("Tobii eye tracker opened: %s", self.info)
+
+    def on_gaze_sample(self, sample):
+        # runs on the Tobii SDK thread
+        row = gaze_sample_to_row(sample)
+        with self.buffer_lock:
+            self.samples.append(row)
+
+    def current_time_us(self):
+        # same clock as each sample's system_time_stamp
+        return self.tr.get_system_time_stamp()
+
+    def mark_event(self, label, code, trial_num=None, frame_num=None):
+        """Record the current eye-tracker clock time; call via win.callOnFlip."""
+        row = [self.current_time_us(), label, code, trial_num, frame_num]
+        with self.buffer_lock:
+            self.events.append(row)
+
+    def write_buffered_data(self, samples_path, events_path):
+        """Append buffered samples and events to their TSV files and clear the buffers."""
+        with self.buffer_lock:
+            samples, self.samples = self.samples, []
+            events, self.events = self.events, []
+        append_rows_tsv(samples_path, eyetracking_sample_columns, samples)
+        append_rows_tsv(events_path, eyetracking_event_columns, events)
+
+    def close(self):
+        if self.eyetracker is not None:
+            try:
+                self.eyetracker.unsubscribe_from(self.tr.EYETRACKER_GAZE_DATA, self.on_gaze_sample)
+            except Exception as exc:
+                logging.error("Eye tracker unsubscribe error during close: %s", exc)
+        self.eyetracker = None
+
+
+class SimulatedTobiiEyeTracker(TobiiEyeTracker):
+    """Drop-in eye tracker for testing without hardware; records events, no samples."""
+
+    def open(self):
+        self.info = {"model": "simulated", "gaze_output_hz": self.expected_gaze_output_hz}
+        logging.info("Simulated eye tracker opened")
+
+    def current_time_us(self):
+        return time.perf_counter_ns() // 1000
+
+    def close(self):
+        return
+
+
 def log_trigger_settings(
     pulse_width_s=trigger_pulse_width_s,
     min_gap_s=trigger_min_gap_s,
@@ -329,3 +464,28 @@ def maybe_send_frame_marker(
         )
         return True
     return False
+
+
+def gaze_sample_to_row(sample):
+    """Flatten one tobii_research gaze-data dictionary into eyetracking_sample_columns order."""
+    row = [sample["device_time_stamp"], sample["system_time_stamp"]]
+    for eye in ("left", "right"):
+        row.extend(sample[f"{eye}_gaze_point_on_display_area"])
+        row.append(sample[f"{eye}_gaze_point_validity"])
+    for eye in ("left", "right"):
+        row.append(sample[f"{eye}_pupil_diameter"])
+        row.append(sample[f"{eye}_pupil_validity"])
+    for eye in ("left", "right"):
+        row.extend(sample[f"{eye}_gaze_origin_in_user_coordinate_system"])
+        row.append(sample[f"{eye}_gaze_origin_validity"])
+    return row
+
+
+def append_rows_tsv(path, columns, rows):
+    """Append rows to a TSV file, writing the header if the file is new."""
+    write_header = not path.exists()
+    with open(path, "a", newline="") as file:
+        writer = csv.writer(file, delimiter="\t")
+        if write_header:
+            writer.writerow(columns)
+        writer.writerows(["N/A" if value is None else value for value in row] for row in rows)

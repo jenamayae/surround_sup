@@ -20,6 +20,8 @@ _required_local_settings = (
     "viewing_distance_cm",
     "fullscreen",
     "display_gamma",
+    "simulate_eyetracker",
+    "eyetracker_serial",
 )
 _missing_local_settings = [
     name for name in _required_local_settings if name not in globals()
@@ -142,15 +144,18 @@ frame_marker_interval = 80
 assert frame_marker_interval % frames_per_reversal(refresh_hz, center_flicker_hz) == 0
 assert frame_marker_interval % frames_per_reversal(refresh_hz, surround_flicker_hz) == 0
 
+# --- eye tracker ---
+eyetracker_gaze_output_hz = 60  # must match Frequency set in Eye Tracker Manager
+
 # --- event codes ---
 # one bit per code so overlapping events stay decodable on FIO0-FIO7
 frame_marker_code = 64
 stimulus_offset_code = 128
 condition_event_code_rows = [
     {"condition_id": 1, "event_code": 1,  "center_orientation": 45,  "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0},
-    {"condition_id": 2, "event_code": 2,  "center_orientation": 45,  "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 0.70},
-    {"condition_id": 3, "event_code": 4,  "center_orientation": 45,  "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 0.70},
-    {"condition_id": 4, "event_code": 8,  "center_orientation": 45, "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0.50},
-    {"condition_id": 5, "event_code": 16, "center_orientation": 45, "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 0.50},
-    {"condition_id": 6, "event_code": 32, "center_orientation": 45, "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 0.50},
+    {"condition_id": 2, "event_code": 2,  "center_orientation": 45,  "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 1.0},
+    {"condition_id": 3, "event_code": 4,  "center_orientation": 45,  "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 1.0},
+ #   {"condition_id": 4, "event_code": 8,  "center_orientation": 45, "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0.50},
+  #  {"condition_id": 5, "event_code": 16, "center_orientation": 45, "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 0.50},
+   # {"condition_id": 6, "event_code": 32, "center_orientation": 45, "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 0.50},
 ]

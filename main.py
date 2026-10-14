@@ -23,6 +23,8 @@ from config import (
     contrast_response_keys,
     contrast_task_eligible_eccentricities,
     display_gamma,
+    eyetracker_gaze_output_hz,
+    eyetracker_serial,
     fixation_red_duration_s,
     frame_marker_code,
     frame_marker_interval,
@@ -33,6 +35,7 @@ from config import (
     monitor_width_cm,
     refresh_hz,
     screen_index,
+    simulate_eyetracker,
     simulate_labjack,
     stimulus_offset_code,
     surround_diameter_deg,
@@ -45,6 +48,8 @@ from config import (
 from hardware import (
     LabjackFio8BitTrigger,
     SimulatedLabjackFio8BitTrigger,
+    SimulatedTobiiEyeTracker,
+    TobiiEyeTracker,
 )
 from stimuli import (
     draw_stimulus,
@@ -121,6 +126,7 @@ def prepare_run_paths(exp_info):
     derivatives_dir.mkdir(parents=True, exist_ok=True)
 
     run_id = exp_info["run"]
+    eyetracking_prefix = f"sub-{exp_info['subject']}_ses-{exp_info['session']}_run-{run_id}"
     return {
         "run_root": run_root,
         "rawdata_dir": rawdata_dir,
@@ -128,6 +134,8 @@ def prepare_run_paths(exp_info):
         "derivatives_dir": derivatives_dir,
         "session_info_path": metadata_dir / f"session_info_run-{run_id}.json",
         "trial_conditions_path": metadata_dir / f"trial_conditions_run-{run_id}",
+        "eyetracking_samples_path": rawdata_dir / f"{eyetracking_prefix}_eyetracking.tsv",
+        "eyetracking_events_path": rawdata_dir / f"{eyetracking_prefix}_eyetracking_events.tsv",
     }
 
 
@@ -174,7 +182,7 @@ def write_session_info_json(path, session_info):
     path.write_text(json.dumps(session_info, indent=2) + "\n")
 
 
-def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_vendor):
+def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_vendor, eyetracker_info):
     return {
         "participant": {
             "sub_id": exp_info["subject"],
@@ -238,6 +246,14 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_ven
                 "viewing_distance_cm": viewing_distance_cm,
                 "fullscreen": fullscreen,
                 "display_gamma": display_gamma,
+                "simulate_eyetracker": simulate_eyetracker,
+                "eyetracker_serial": eyetracker_serial,
+            },
+            "eyetracker": {
+                **eyetracker_info,
+                "expected_gaze_output_hz": eyetracker_gaze_output_hz,
+                "calibration": "Tobii Eye Tracker Manager, per participant before run",
+                "event_timing": "system_time_stamp_us recorded in callOnFlip after the trigger call",
             },
         },
         "events": {
@@ -494,6 +510,7 @@ def run_trial(
     quest_controller,
     trigger=None,
     trial_num=None,
+    eyetracker=None,
 ):
     n_frames = round(trial_duration_s * refresh_hz)
     trial_events = build_trial_events(trial, n_frames, refresh_hz)
@@ -585,6 +602,9 @@ def run_trial(
             elif trigger_is_high:
                 win.callOnFlip(trigger.send_code, 0)
                 trigger_is_high = False
+        if eyetracker is not None and code is not None:
+            label = "trial_start" if frame_num == 0 else "frame_marker"
+            win.callOnFlip(eyetracker.mark_event, label, code, trial_num, frame_num)
         win.flip()
 
         response_key = get_task_response()
@@ -606,7 +626,16 @@ def run_trial(
     return trial_events
 
 
-def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
+def run_iti(
+    win,
+    stims,
+    iti_duration_s,
+    refresh_hz,
+    trigger=None,
+    eyetracker=None,
+    run_paths=None,
+    trial_num=None,
+):
     n_frames = round(iti_duration_s * refresh_hz)
 
     event.clearEvents(eventType="keyboard")
@@ -622,10 +651,17 @@ def run_iti(win, stims, iti_duration_s, refresh_hz, trigger=None):
             win.callOnFlip(trigger.send_code, stimulus_offset_code)
         elif trigger is not None and frame_index == 1:
             win.callOnFlip(trigger.send_code, 0)
+        if eyetracker is not None and frame_index == 0:
+            win.callOnFlip(eyetracker.mark_event, "stimulus_offset", stimulus_offset_code, trial_num, frame_index)
         win.flip()
         # automatic gc is off during the run; collect once the offset trigger is cleared
         if frame_index == 1:
             gc.collect()
+            if eyetracker is not None:
+                eyetracker.write_buffered_data(
+                    run_paths["eyetracking_samples_path"],
+                    run_paths["eyetracking_events_path"],
+                )
 
         handle_runtime_keys(win)
 
@@ -680,6 +716,8 @@ def run_experiment_trials(
     trigger,
     quest_controllers,
     frame_interval_log,
+    eyetracker,
+    run_paths,
 ):
     current_block_name = None
     trials = generate_trials(refresh_hz=refresh_hz)
@@ -702,6 +740,7 @@ def run_experiment_trials(
             quest_controller=quest_controller,
             trigger=trigger,
             trial_num=trial_num,
+            eyetracker=eyetracker,
         )
         intervals = list(win.frameIntervals)
         # index 0 spans the pre-trial gap (previous flip to frame 0), so it is not counted
@@ -718,6 +757,9 @@ def run_experiment_trials(
             iti_duration_s=iti_duration_s,
             refresh_hz=refresh_hz,
             trigger=trigger,
+            eyetracker=eyetracker,
+            run_paths=run_paths,
+            trial_num=trial_num,
         )
 
         log_trial(
@@ -777,12 +819,17 @@ def main():
     check_quest_contrasts_have_stims(stims, quest_controllers)
     warm_up_target_gratings(win, stims)
 
+    eyetracker_class = SimulatedTobiiEyeTracker if simulate_eyetracker else TobiiEyeTracker
+    eyetracker = eyetracker_class()
+    eyetracker.open()
+
     session_info = make_session_info(
         exp_info,
         datetime_start,
         refresh_hz,
         code_version=code_version,
         gl_vendor=win.glVendor,
+        eyetracker_info=eyetracker.info,
     )
     write_session_info_json(run_paths["session_info_path"], session_info)
 
@@ -802,6 +849,8 @@ def main():
             trigger=trigger_backend,
             quest_controllers=quest_controllers,
             frame_interval_log=frame_interval_log,
+            eyetracker=eyetracker,
+            run_paths=run_paths,
         )
         show_message(win, "End of experiment. Thank you!\nPress SPACE to exit.")
     except ExperimentQuit:
@@ -809,6 +858,11 @@ def main():
     finally:
         if trigger_backend is not None:
             trigger_backend.close()
+        eyetracker.close()
+        eyetracker.write_buffered_data(
+            run_paths["eyetracking_samples_path"],
+            run_paths["eyetracking_events_path"],
+        )
         exp.saveAsWideText(str(run_paths["trial_conditions_path"]) + ".csv")
         save_questplus_handlers(
             quest_controllers=quest_controllers,
