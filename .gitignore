@@ -4,3 +4,5 @@ __pycache__/
 
 data/
 config_local.py
+
+Claude outputs/

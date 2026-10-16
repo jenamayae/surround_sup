@@ -14,6 +14,7 @@ from config import (
     frames_per_reversal,
     photocell_box_pos_deg,
     photocell_box_size_deg,
+    quest_configs,
     raised_cos_fringe,
     raised_cos_fringe_params,
     surround_diameter_deg,
@@ -21,7 +22,7 @@ from config import (
     surround_sf,
     units,
 )
-from task import QUEST_INTENSITY_VALS, eligible_center_indices
+from task import eligible_center_indices
 
 grating_texture_res = 256
 contrast_match_tolerance = 1e-9
@@ -127,13 +128,18 @@ def make_stimuli(win):
         if row["surround_orientation"] is not None
     }
 
+    # every contrast either QUEST+ group can request
+    quest_intensity_vals = sorted(
+        {value for quest_config in quest_configs.values() for value in quest_config["intensity_vals"]}
+    )
+
     centers = []
     center_holes = []
     for center_index, pos in enumerate(center_positions_deg):
         # one stim per contrast this center can show, textures uploaded once here
         contrasts = list(center_contrasts)
         if center_index in task_center_indices:
-            contrasts += QUEST_INTENSITY_VALS
+            contrasts += quest_intensity_vals
         centers.append(
             {
                 contrast: GratingStim(

@@ -1,3 +1,4 @@
+import numpy as np
 from psychopy.tools.coordinatetools import pol2cart
 
 # --- display ---
@@ -114,7 +115,7 @@ task_instruction_text = (
 block_definitions = [
     {
         "block_name": "ssvep_task",
-        "trials_per_condition": 10,
+        "trials_per_condition": 20,
     },
 ]
 
@@ -131,6 +132,40 @@ contrast_response_keys = {
     "lower_left": "1",
     "lower_right": "3",
 }
+
+# --- QUEST+ ---
+# intensity = absolute target contrast; each group starts at the top of its own list
+center_only_quest_intensity_vals = np.geomspace(0.01, 0.05, num=20).tolist()
+surround_quest_intensity_vals = np.geomspace(0.02, 0.1, num=20).tolist()
+quest_threshold_vals = np.geomspace(0.01, 0.1, num=25).tolist()
+
+def build_quest_config(intensity_vals):
+    return {
+        "intensity_vals": intensity_vals,
+        "threshold_vals": quest_threshold_vals,
+        "slope_vals": [2],
+        "lower_asymptote_vals": [0.25],
+        "lapse_rate_vals": [0.02],
+        "response_vals": ["Correct", "Incorrect"],
+        "start_intensity": intensity_vals[-1],
+        "psychometric_func": "weibull",
+        "stim_scale": "linear",
+        "stim_selection_method": "minNEntropy",
+        "stim_selection_options": {"N": 3, "maxConsecutiveReps": 2},
+        "param_estimation_method": "mean",
+    }
+
+quest_configs = {
+    "center_only": build_quest_config(center_only_quest_intensity_vals),
+    "surround": build_quest_config(surround_quest_intensity_vals),
+}
+
+def quest_group_for_condition(condition_row):
+    # center only = no surround grating
+    if condition_row["surround_orientation"] is None:
+        return "center_only"
+    return "surround"
+
 # --- hardware ---
 labjack_device_type = "T7"
 labjack_connection_type = "USB"

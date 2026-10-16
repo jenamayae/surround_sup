@@ -33,6 +33,8 @@ from config import (
     monitor_name,
     monitor_pixels,
     monitor_width_cm,
+    quest_configs,
+    quest_group_for_condition,
     refresh_hz,
     screen_index,
     simulate_eyetracker,
@@ -60,7 +62,6 @@ from stimuli import (
     stim_for_contrast,
 )
 from task import (
-    QUEST_CONFIG,
     QuestPlusController,
     center_change_duration_aligned_s,
     eligible_center_indices,
@@ -214,18 +215,16 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_ven
         },
         "quest configs": {
             "quest_intensity_definition": "absolute_target_contrast",
-            "quest_intensity_vals": QUEST_CONFIG["intensity_vals"],
-            "quest_threshold_vals": QUEST_CONFIG["threshold_vals"],
-            "quest_slope_vals": QUEST_CONFIG["slope_vals"],
-            "quest_lower_asymptote_vals": QUEST_CONFIG["lower_asymptote_vals"],
-            "quest_lapse_rate_vals": QUEST_CONFIG["lapse_rate_vals"],
-            "quest_response_vals": QUEST_CONFIG["response_vals"],
-            "quest_start_intensity": QUEST_CONFIG["start_intensity"],
-            "quest_psychometric_func": QUEST_CONFIG["psychometric_func"],
-            "quest_stim_scale": QUEST_CONFIG["stim_scale"],
-            "quest_stim_selection_method": QUEST_CONFIG["stim_selection_method"],
-            "quest_stim_selection_options": QUEST_CONFIG["stim_selection_options"],
-            "quest_param_estimation_method": QUEST_CONFIG["param_estimation_method"],
+            "quest_group_by_condition": {
+                f"condition_{row['condition_id']:02d}": quest_group_for_condition(row)
+                for row in condition_event_code_rows
+            },
+            **{
+                f"quest_{group}": {
+                    f"quest_{name}": value for name, value in quest_config.items()
+                }
+                for group, quest_config in quest_configs.items()
+            },
         },
         "hardware": {
             "monitor_name": monitor_name,
@@ -292,7 +291,10 @@ class ExperimentQuit(Exception):
 
 def make_quest_controllers():
     return {
-        row["condition_id"]: QuestPlusController(condition_id=row["condition_id"])
+        row["condition_id"]: QuestPlusController(
+            quest_config=quest_configs[quest_group_for_condition(row)],
+            condition_id=row["condition_id"],
+        )
         for row in condition_event_code_rows
     }
 

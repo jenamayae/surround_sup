@@ -115,11 +115,14 @@ import numpy as np
 
 import main
 import stimuli
-from config import block_definitions, condition_event_code_rows
+from config import (
+    block_definitions,
+    condition_event_code_rows,
+    quest_configs,
+    quest_group_for_condition,
+)
 from hardware import BaseTrigger, TriggerDispatcher
 from task import (
-    QUEST_CONFIG,
-    QUEST_INTENSITY_VALS,
     QuestPlusController,
     build_event_frame_lists,
     weibull_prob_correct,
@@ -145,7 +148,10 @@ class SoftwareGammaCorrectionTests(unittest.TestCase):
     def grating_contrasts(self):
         condition_contrasts = [row["center_contrast"] for row in condition_event_code_rows]
         condition_contrasts += [row["surround_contrast"] for row in condition_event_code_rows]
-        return QUEST_INTENSITY_VALS + condition_contrasts
+        quest_contrasts = [
+            value for quest_config in quest_configs.values() for value in quest_config["intensity_vals"]
+        ]
+        return quest_contrasts + condition_contrasts
 
     def texture_luminance(self, texture):
         return ((texture.astype(float) + 1) / 2) ** stimuli.display_gamma
@@ -206,14 +212,15 @@ class SoftwareGammaCorrectionTests(unittest.TestCase):
             stimuli.stim_for_contrast(stims_by_contrast, 0.05 + 1e-6)
 
     def test_every_quest_contrast_has_a_task_center_stim(self):
+        surround_intensity_vals = quest_configs["surround"]["intensity_vals"]
         stims = {"centers": [
-            {contrast: object() for contrast in QUEST_INTENSITY_VALS}
+            {contrast: object() for contrast in surround_intensity_vals}
             for _ in range(8)
         ]}
-        controllers = {1: types.SimpleNamespace(intensity_vals=QUEST_INTENSITY_VALS)}
+        controllers = {1: types.SimpleNamespace(intensity_vals=surround_intensity_vals)}
         main.check_quest_contrasts_have_stims(stims, controllers)
 
-        controllers[1].intensity_vals = QUEST_INTENSITY_VALS + [0.2]
+        controllers[1].intensity_vals = surround_intensity_vals + [0.2]
         with self.assertRaises(ValueError):
             main.check_quest_contrasts_have_stims(stims, controllers)
 
@@ -254,12 +261,60 @@ class SoftwareGammaCorrectionTests(unittest.TestCase):
 
 class QuestPlusConfigurationTests(unittest.TestCase):
     def test_guessing_rate_matches_four_choice_task(self):
-        self.assertEqual(QUEST_CONFIG["lower_asymptote_vals"], [0.25])
+        for quest_config in quest_configs.values():
+            self.assertEqual(quest_config["lower_asymptote_vals"], [0.25])
         self.assertEqual(len(main.contrast_response_keys), 4)
 
 
+class QuestPlusGroupTests(unittest.TestCase):
+    def test_center_only_and_surround_conditions_get_their_group_config(self):
+        expected_groups = {1: "center_only", 2: "surround", 3: "surround"}
+        for row in condition_event_code_rows:
+            if row["condition_id"] in expected_groups:
+                self.assertEqual(quest_group_for_condition(row), expected_groups[row["condition_id"]])
+
+        controllers = main.make_quest_controllers()
+        for condition_id, group in expected_groups.items():
+            quest_config = quest_configs[group]
+            self.assertIs(controllers[condition_id].quest_config, quest_config)
+            self.assertEqual(
+                controllers[condition_id].select_next_target_contrast(),
+                quest_config["intensity_vals"][-1],
+            )
+
+    def test_group_intensity_vals_match_requested_ranges(self):
+        for group, low, high, count in (("center_only", 0.01, 0.07, 15), ("surround", 0.03, 0.1, 20)):
+            intensity_vals = quest_configs[group]["intensity_vals"]
+            self.assertEqual(len(intensity_vals), count)
+            self.assertAlmostEqual(intensity_vals[0], low, places=12)
+            self.assertAlmostEqual(intensity_vals[-1], high, places=12)
+            # log spaced: constant ratio between neighbours
+            self.assertTrue(np.allclose(np.diff(np.log(intensity_vals)), np.log(high / low) / (count - 1)))
+
+    def test_session_info_logs_each_group_and_condition_assignment(self):
+        session_info = main.make_session_info(
+            exp_info={"subject": "subj", "session": "001", "run": "001"},
+            datetime_start="2026-10-16T12:00:00",
+            refresh_hz=120,
+            code_version={"commit": "abc", "dirty": False, "diff": ""},
+            gl_vendor="nvidia corporation",
+            eyetracker_info={},
+        )
+        quest_info = session_info["quest configs"]
+
+        self.assertEqual(quest_info["quest_group_by_condition"]["condition_01"], "center_only")
+        self.assertEqual(quest_info["quest_group_by_condition"]["condition_02"], "surround")
+        for group, quest_config in quest_configs.items():
+            self.assertEqual(
+                quest_info[f"quest_{group}"]["quest_intensity_vals"], quest_config["intensity_vals"]
+            )
+            self.assertEqual(
+                quest_info[f"quest_{group}"]["quest_start_intensity"], quest_config["start_intensity"]
+            )
+
+
 def small_quest_config(**overrides):
-    config = dict(QUEST_CONFIG)
+    config = dict(quest_configs["surround"])
     config.update(overrides)
     return config
 
@@ -316,10 +371,11 @@ class QuestPlusComputationTests(unittest.TestCase):
         self.assertAlmostEqual(controller.threshold_posterior()[0], p_low / (p_low + p_high), places=5)
 
     def test_first_selection_is_start_intensity_and_no_update_leaves_estimate(self):
-        controller = QuestPlusController(seed=0)
-        self.assertEqual(controller.select_next_target_contrast(), QUEST_CONFIG["start_intensity"])
-        self.assertEqual(controller.estimated_threshold(), QUEST_CONFIG["start_intensity"])
-        self.assertTrue(np.allclose(controller.threshold_posterior(), 1 / 25))
+        for quest_config in quest_configs.values():
+            controller = QuestPlusController(quest_config=quest_config, seed=0)
+            self.assertEqual(controller.select_next_target_contrast(), quest_config["start_intensity"])
+            self.assertEqual(controller.estimated_threshold(), quest_config["start_intensity"])
+            self.assertTrue(np.allclose(controller.threshold_posterior(), 1 / 25))
 
     def test_selection_draws_from_three_lowest_expected_entropies(self):
         intensity_vals = [0.005, 0.01, 0.02, 0.04, 0.08]
@@ -367,7 +423,8 @@ class QuestPlusComputationTests(unittest.TestCase):
         estimates = []
         for run in range(300):
             observer_rng = np.random.default_rng(1000 + run)
-            controller = QuestPlusController(seed=run)
+            # 0.02 lies inside the center-only intensity range
+            controller = QuestPlusController(quest_config=quest_configs["center_only"], seed=run)
             for _ in range(60):
                 contrast = controller.select_next_target_contrast()
                 p = weibull_prob_correct(contrast, true_threshold, 2, 0.25, 0.02)
@@ -380,7 +437,7 @@ class QuestPlusComputationTests(unittest.TestCase):
         self.assertGreater(within_25_percent, 0.9)
 
     def test_update_plus_selection_is_well_under_one_frame(self):
-        controller = QuestPlusController(seed=0)
+        controller = QuestPlusController(quest_config=quest_configs["surround"], seed=0)
         controller.select_next_target_contrast()
         durations_ms = []
         for _ in range(60):
@@ -702,7 +759,9 @@ class TrialLoggingTests(unittest.TestCase):
 class SessionMetadataTests(unittest.TestCase):
     def test_quest_controllers_are_saved_in_one_run_file(self):
         controllers = {
-            condition_id: QuestPlusController(condition_id=condition_id, seed=condition_id)
+            condition_id: QuestPlusController(
+                quest_config=quest_configs["surround"], condition_id=condition_id, seed=condition_id
+            )
             for condition_id in (1, 2)
         }
         controllers[2].update(0.1, correct=True)
@@ -722,13 +781,13 @@ class SessionMetadataTests(unittest.TestCase):
         self.assertEqual(snapshot["run_id"], "003")
         self.assertEqual(list(snapshot["conditions"]), ["condition_01", "condition_02"])
         condition = snapshot["conditions"]["condition_02"]
-        self.assertEqual(condition["settings"], json.loads(json.dumps(QUEST_CONFIG)))
+        self.assertEqual(condition["settings"], json.loads(json.dumps(quest_configs["surround"])))
         self.assertEqual(condition["seed"], 2)
         self.assertEqual(
             condition["trials"],
             [{"contrast": 0.1, "response": "Correct"}, {"contrast": 0.1, "response": "Incorrect"}],
         )
-        self.assertEqual(condition["threshold_vals"], QUEST_CONFIG["threshold_vals"])
+        self.assertEqual(condition["threshold_vals"], quest_configs["surround"]["threshold_vals"])
         self.assertAlmostEqual(sum(condition["threshold_posterior"]), 1.0)
         self.assertAlmostEqual(
             condition["estimated_threshold"], controllers[2].estimated_threshold()

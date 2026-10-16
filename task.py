@@ -18,25 +18,6 @@ from config import (
     frames_per_reversal,
 )
 
-QUEST_INTENSITY_VALS = np.geomspace(0.025, 0.1, num=13).tolist()
-QUEST_THRESHOLD_VALS = np.geomspace(0.01, 0.1, num=25).tolist()
-
-QUEST_CONFIG = {
-    "intensity_vals": QUEST_INTENSITY_VALS,
-    "threshold_vals": QUEST_THRESHOLD_VALS,
-    "slope_vals": [2],
-    "lower_asymptote_vals": [0.25],
-    "lapse_rate_vals": [0.02],
-    "response_vals": ["Correct", "Incorrect"],
-    "start_intensity": QUEST_INTENSITY_VALS[-1],
-    "psychometric_func": "weibull",
-    "stim_scale": "linear",
-    "stim_selection_method": "minNEntropy",
-    "stim_selection_options": {"N": 3, "maxConsecutiveReps": 2},
-    "param_estimation_method": "mean",
-}
-
-
 def build_keypad_map(mapping):
     inverted = {value: key for key, value in mapping.items()}
     inverted.update({f"num_{value}": key for key, value in mapping.items()})
@@ -185,11 +166,11 @@ class QuestPlusController:
 
     def __init__(
         self,
+        quest_config,
         condition_id=None,
-        quest_config=QUEST_CONFIG,
         seed=None,
     ):
-        # only the options used in QUEST_CONFIG are implemented
+        # only the options used in config.quest_configs are implemented
         if (
             quest_config["psychometric_func"] != "weibull"
             or quest_config["stim_scale"] != "linear"
