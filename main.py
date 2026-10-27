@@ -4,6 +4,7 @@ import gc
 import json
 import logging
 from pathlib import Path
+import random
 import subprocess
 import sys
 
@@ -11,6 +12,8 @@ import numpy as np
 from psychopy import core, data, event, gui, visual
 
 from config import (
+    audio_device_name,
+    audio_sample_rate_hz,
     calibration_mode,
     center_change_count_per_trial,
     center_change_duration_sign_reversals,
@@ -22,6 +25,7 @@ from config import (
     contrast_change_start_s,
     contrast_response_keys,
     contrast_task_eligible_eccentricities,
+    cs_orientations,
     display_gamma,
     eyetracker_gaze_output_hz,
     eyetracker_serial,
@@ -37,6 +41,7 @@ from config import (
     quest_group_for_condition,
     refresh_hz,
     screen_index,
+    simulate_audio,
     simulate_eyetracker,
     simulate_labjack,
     stimulus_offset_code,
@@ -45,13 +50,21 @@ from config import (
     surround_sf,
     task_instruction_text,
     trial_duration_s,
+    us_duration_s,
+    us_max_consecutive_nonreinforced,
+    us_noise_seed,
+    us_onset_code,
+    us_reinforced_trials_per_condition,
+    us_volume,
     viewing_distance_cm,
 )
 from hardware import (
     LabjackFio8BitTrigger,
     SimulatedLabjackFio8BitTrigger,
     SimulatedTobiiEyeTracker,
+    SimulatedUnconditionedStimulus,
     TobiiEyeTracker,
+    UnconditionedStimulus,
 )
 from stimuli import (
     draw_stimulus,
@@ -183,7 +196,16 @@ def write_session_info_json(path, session_info):
     path.write_text(json.dumps(session_info, indent=2) + "\n")
 
 
-def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_vendor, eyetracker_info):
+def make_session_info(
+    exp_info,
+    datetime_start,
+    refresh_hz,
+    code_version,
+    gl_vendor,
+    eyetracker_info,
+    cs_plus_orientation,
+    us_info,
+):
     return {
         "participant": {
             "sub_id": exp_info["subject"],
@@ -212,6 +234,21 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_ven
             "center_change_duration_sign_reversals": center_change_duration_sign_reversals,
             "center_change_duration_aligned_s": center_change_duration_aligned_s(),
             "fixation_red_duration_s": fixation_red_duration_s,
+        },
+        "fear conditioning": {
+            "cs_plus_orientation": cs_plus_orientation,
+            "cs_minus_orientation": next(
+                orientation for orientation in cs_orientations if orientation != cs_plus_orientation
+            ),
+            "cs_plus_assignment": "random per session",
+            "us_reinforced_trials_per_condition": us_reinforced_trials_per_condition,
+            "us_max_consecutive_nonreinforced": us_max_consecutive_nonreinforced,
+            "us_onset": "scheduled for the first ITI flip (stimulus offset)",
+            "us_stimulus": "uniform white noise, abrupt onset and offset",
+            "us_duration_s": us_duration_s,
+            "us_volume": us_volume,
+            "us_noise_seed": us_noise_seed,
+            "us_audio": us_info,
         },
         "quest configs": {
             "quest_intensity_definition": "absolute_target_contrast",
@@ -247,6 +284,9 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_ven
                 "display_gamma": display_gamma,
                 "simulate_eyetracker": simulate_eyetracker,
                 "eyetracker_serial": eyetracker_serial,
+                "simulate_audio": simulate_audio,
+                "audio_device_name": audio_device_name,
+                "audio_sample_rate_hz": audio_sample_rate_hz,
             },
             "eyetracker": {
                 **eyetracker_info,
@@ -259,6 +299,8 @@ def make_session_info(exp_info, datetime_start, refresh_hz, code_version, gl_ven
             "calibration_mode": calibration_mode,
             "stimulus_offset_code": stimulus_offset_code,
             "frame_marker_code": frame_marker_code,
+            "us_onset_code": us_onset_code,
+            "us_onset_trigger": "stimulus_offset_code + us_onset_code on the same flip",
             "frame_marker_interval": frame_marker_interval,
             "trigger_pulse": "set on flip, cleared on next flip (1 frame)",
         },
@@ -637,8 +679,12 @@ def run_iti(
     eyetracker=None,
     run_paths=None,
     trial_num=None,
+    us=None,
+    reinforced=False,
 ):
     n_frames = round(iti_duration_s * refresh_hz)
+    # the US starts at stimulus offset, so both codes go out on the same flip
+    offset_code = stimulus_offset_code + us_onset_code if reinforced else stimulus_offset_code
 
     event.clearEvents(eventType="keyboard")
 
@@ -650,11 +696,15 @@ def run_iti(
             stims["photocell_box"].draw()
 
         if trigger is not None and frame_index == 0:
-            win.callOnFlip(trigger.send_code, stimulus_offset_code)
+            win.callOnFlip(trigger.send_code, offset_code)
         elif trigger is not None and frame_index == 1:
             win.callOnFlip(trigger.send_code, 0)
         if eyetracker is not None and frame_index == 0:
             win.callOnFlip(eyetracker.mark_event, "stimulus_offset", stimulus_offset_code, trial_num, frame_index)
+            if reinforced:
+                win.callOnFlip(eyetracker.mark_event, "us_onset", us_onset_code, trial_num, frame_index)
+        if frame_index == 0 and reinforced:
+            us.play_on_next_flip(win)
         win.flip()
         # automatic gc is off during the run; collect once the offset trigger is cleared
         if frame_index == 1:
@@ -687,6 +737,8 @@ def log_trial(
         "surround_present": surround_present,
         "surround_orientation": trial["surround_orientation"] if surround_present else "N/A",
         "surround_contrast": trial["surround_contrast"] if surround_present else "N/A",
+        "cs_type": trial["cs_type"],
+        "reinforced": trial["reinforced"],
         "contrast_task_outcomes": format_log_list(
             [event_info["outcome"] for event_info in events]
         ),
@@ -720,9 +772,11 @@ def run_experiment_trials(
     frame_interval_log,
     eyetracker,
     run_paths,
+    cs_plus_orientation,
+    us,
 ):
     current_block_name = None
-    trials = generate_trials(refresh_hz=refresh_hz)
+    trials = generate_trials(refresh_hz=refresh_hz, cs_plus_orientation=cs_plus_orientation)
     # gc pauses can drop frames; collection runs manually in each ITI instead
     gc.disable()
 
@@ -762,6 +816,8 @@ def run_experiment_trials(
             eyetracker=eyetracker,
             run_paths=run_paths,
             trial_num=trial_num,
+            us=us,
+            reinforced=trial["reinforced"],
         )
 
         log_trial(
@@ -825,6 +881,11 @@ def main():
     eyetracker = eyetracker_class()
     eyetracker.open()
 
+    us_class = SimulatedUnconditionedStimulus if simulate_audio else UnconditionedStimulus
+    us = us_class()
+    us.open()
+    cs_plus_orientation = random.choice(cs_orientations)
+
     session_info = make_session_info(
         exp_info,
         datetime_start,
@@ -832,6 +893,8 @@ def main():
         code_version=code_version,
         gl_vendor=win.glVendor,
         eyetracker_info=eyetracker.info,
+        cs_plus_orientation=cs_plus_orientation,
+        us_info=us.info,
     )
     write_session_info_json(run_paths["session_info_path"], session_info)
 
@@ -853,6 +916,8 @@ def main():
             frame_interval_log=frame_interval_log,
             eyetracker=eyetracker,
             run_paths=run_paths,
+            cs_plus_orientation=cs_plus_orientation,
+            us=us,
         )
         show_message(win, "End of experiment. Thank you!\nPress SPACE to exit.")
     except ExperimentQuit:
@@ -860,6 +925,7 @@ def main():
     finally:
         if trigger_backend is not None:
             trigger_backend.close()
+        us.close()
         eyetracker.close()
         eyetracker.write_buffered_data(
             run_paths["eyetracking_samples_path"],

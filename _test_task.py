@@ -121,13 +121,13 @@ from config import (
     quest_configs,
     quest_group_for_condition,
 )
-from hardware import BaseTrigger, TriggerDispatcher
+from hardware import BaseTrigger, TriggerDispatcher, white_noise_buffer
 from task import (
     QuestPlusController,
     build_event_frame_lists,
     weibull_prob_correct,
 )
-from trials import generate_trials
+from trials import assign_reinforcement, generate_trials
 
 
 class DisplaySetupTests(unittest.TestCase):
@@ -299,6 +299,8 @@ class QuestPlusGroupTests(unittest.TestCase):
             code_version={"commit": "abc", "dirty": False, "diff": ""},
             gl_vendor="nvidia corporation",
             eyetracker_info={},
+            cs_plus_orientation=45,
+            us_info={},
         )
         quest_info = session_info["quest configs"]
 
@@ -707,7 +709,7 @@ class TrialLoggingTests(unittest.TestCase):
             def nextEntry(self):
                 self.entry_count += 1
 
-        trial = generate_trials(refresh_hz=120, shuffle=False)[0]
+        trial = generate_trials(refresh_hz=120, cs_plus_orientation=45, shuffle=False)[0]
         original_trial = dict(trial)
         events = [
             {
@@ -741,6 +743,8 @@ class TrialLoggingTests(unittest.TestCase):
         self.assertEqual(exp.row["contrast_task_no_response_count"], 1)
         self.assertEqual(exp.row["presented_target_contrasts"], "[0.2; 0.05]")
         self.assertEqual(exp.row["quest_estimated_threshold"], 0.1)
+        self.assertEqual(exp.row["cs_type"], trial["cs_type"])
+        self.assertEqual(exp.row["reinforced"], trial["reinforced"])
         self.assertEqual(trial, original_trial)
         removed_fields = {
             "block_index",
@@ -868,7 +872,7 @@ class SessionMetadataTests(unittest.TestCase):
 
 class TrialGenerationTests(unittest.TestCase):
     def test_single_task_block_has_configured_trials_per_condition(self):
-        trials = generate_trials(refresh_hz=120)
+        trials = generate_trials(refresh_hz=120, cs_plus_orientation=45)
         trials_per_condition = block_definitions[0]["trials_per_condition"]
         condition_ids = [row["condition_id"] for row in condition_event_code_rows]
 
@@ -1066,6 +1070,174 @@ class TriggerDispatcherTests(unittest.TestCase):
             self.assertEqual(backend.codes, [11, 12, 13])
         finally:
             dispatcher.close()
+
+
+def cs_plus_sequence(trials):
+    return [trial for trial in trials if trial["cs_type"] == "cs_plus"]
+
+
+def longest_unreinforced_run(cs_plus_trials):
+    longest = run = 0
+    for trial in cs_plus_trials:
+        run = 0 if trial["reinforced"] else run + 1
+        longest = max(longest, run)
+    return longest
+
+
+class ReinforcementScheduleTests(unittest.TestCase):
+    def test_cs_type_follows_cs_plus_center_orientation(self):
+        for cs_plus_orientation in (45, 135):
+            trials = generate_trials(refresh_hz=120, cs_plus_orientation=cs_plus_orientation)
+            for trial in trials:
+                expected = "cs_plus" if trial["center_orientation"] == cs_plus_orientation else "cs_minus"
+                self.assertEqual(trial["cs_type"], expected)
+
+    def test_schedule_meets_counts_and_run_limit_across_seeds(self):
+        reinforced_per_condition = main.us_reinforced_trials_per_condition
+        max_run = main.us_max_consecutive_nonreinforced
+        for seed in range(50):
+            random.seed(seed)
+            for cs_plus_orientation in (45, 135):
+                trials = generate_trials(refresh_hz=120, cs_plus_orientation=cs_plus_orientation)
+                cs_plus_trials = cs_plus_sequence(trials)
+
+                self.assertTrue(cs_plus_trials[0]["reinforced"])
+                self.assertLessEqual(longest_unreinforced_run(cs_plus_trials), max_run)
+                self.assertFalse(any(
+                    trial["reinforced"] for trial in trials if trial["cs_type"] == "cs_minus"
+                ))
+                self.assertEqual(
+                    Counter(trial["condition_id"] for trial in cs_plus_trials if trial["reinforced"]),
+                    {
+                        row["condition_id"]: reinforced_per_condition
+                        for row in condition_event_code_rows
+                        if row["center_orientation"] == cs_plus_orientation
+                    },
+                )
+
+    def test_run_limit_skips_cs_minus_trials(self):
+        # CS- trials between CS+ trials must not reset the unreinforced run
+        trials = []
+        for _ in range(6):
+            trials.append({"condition_id": 1, "cs_type": "cs_plus"})
+            trials.append({"condition_id": 4, "cs_type": "cs_minus"})
+        random.seed(0)
+        assign_reinforcement(trials, reinforced_per_condition=2, max_consecutive_nonreinforced=2)
+
+        self.assertEqual(
+            [trial["reinforced"] for trial in cs_plus_sequence(trials)],
+            [True, False, False, True, False, False],
+        )
+
+    def test_lowest_feasible_count_is_scheduled_and_lower_count_raises(self):
+        random.seed(3)
+        trials = generate_trials(refresh_hz=120, cs_plus_orientation=45)
+        trials_for_minimum = [dict(trial) for trial in trials]
+        assign_reinforcement(trials_for_minimum, reinforced_per_condition=7, max_consecutive_nonreinforced=2)
+        self.assertLessEqual(longest_unreinforced_run(cs_plus_sequence(trials_for_minimum)), 2)
+
+        for infeasible_count in (0, 6, 21):
+            with self.assertRaises(ValueError):
+                assign_reinforcement(
+                    [dict(trial) for trial in trials],
+                    reinforced_per_condition=infeasible_count,
+                    max_consecutive_nonreinforced=2,
+                )
+
+
+class FakeUnconditionedStimulus:
+    def __init__(self, event_log):
+        self.event_log = event_log
+
+    def play_on_next_flip(self, win):
+        self.event_log.append(("us_scheduled",))
+
+
+class UnconditionedStimulusTests(unittest.TestCase):
+    def run_iti_with_us(self, reinforced):
+        event_log = []
+        win = FakeWindow(event_log=event_log)
+        trigger = FakeTrigger(event_log=event_log)
+        with patch.object(main.event, "clearEvents", create=True), patch.object(
+            main, "handle_runtime_keys"
+        ):
+            main.run_iti(
+                win=win,
+                stims=make_recording_stims(),
+                iti_duration_s=0.5,
+                refresh_hz=8,
+                trigger=trigger,
+                us=FakeUnconditionedStimulus(event_log),
+                reinforced=reinforced,
+            )
+        return event_log, trigger
+
+    def test_iti_is_840_frames_at_120_hz(self):
+        self.assertEqual(round(main.iti_duration_s * main.refresh_hz), 840)
+
+    def test_reinforced_iti_schedules_us_for_the_offset_flip_with_combined_code(self):
+        event_log, trigger = self.run_iti_with_us(reinforced=True)
+
+        self.assertEqual(main.stimulus_offset_code + main.us_onset_code, 48)
+        self.assertEqual(trigger.codes, [48, 0])
+        self.assertEqual(
+            event_log[:4],
+            [
+                ("scheduled", "send_code"),
+                ("us_scheduled",),
+                ("flip", 1),
+                ("send_code", 48),
+            ],
+        )
+        self.assertEqual(event_log.count(("us_scheduled",)), 1)
+
+    def test_unreinforced_iti_sends_offset_only_and_no_us(self):
+        event_log, trigger = self.run_iti_with_us(reinforced=False)
+
+        self.assertEqual(trigger.codes, [main.stimulus_offset_code, 0])
+        self.assertNotIn(("us_scheduled",), event_log)
+
+    def test_event_code_bits_do_not_overlap(self):
+        condition_codes = [row["event_code"] for row in condition_event_code_rows]
+        self.assertTrue(all(code < main.frame_marker_code for code in condition_codes))
+        single_bit_codes = [main.frame_marker_code, main.stimulus_offset_code, main.us_onset_code]
+        self.assertEqual(len(set(single_bit_codes)), 3)
+        self.assertTrue(all(code & (code - 1) == 0 for code in single_bit_codes))
+
+    def test_session_info_logs_cs_assignment_and_us_settings(self):
+        session_info = main.make_session_info(
+            exp_info={"subject": "subj", "session": "001", "run": "001"},
+            datetime_start="2026-10-27T12:00:00",
+            refresh_hz=120,
+            code_version={"commit": "abc", "dirty": False, "diff": ""},
+            gl_vendor="nvidia corporation",
+            eyetracker_info={},
+            cs_plus_orientation=135,
+            us_info={"audio_lib": "simulated"},
+        )
+        fear_info = session_info["fear conditioning"]
+
+        self.assertEqual(fear_info["cs_plus_orientation"], 135)
+        self.assertEqual(fear_info["cs_minus_orientation"], 45)
+        self.assertEqual(fear_info["us_duration_s"], main.us_duration_s)
+        self.assertEqual(
+            fear_info["us_reinforced_trials_per_condition"], main.us_reinforced_trials_per_condition
+        )
+        self.assertEqual(fear_info["us_audio"], {"audio_lib": "simulated"})
+        self.assertEqual(session_info["events"]["us_onset_code"], main.us_onset_code)
+        self.assertEqual(session_info["trial configs"]["iti_duration_s"], 7)
+
+    def test_white_noise_buffer_is_stereo_full_scale_without_ramp(self):
+        buffer = white_noise_buffer(duration_s=0.1, sample_rate_hz=48000, seed=0)
+
+        self.assertEqual(buffer.shape, (4800, 2))
+        np.testing.assert_array_equal(buffer[:, 0], buffer[:, 1])
+        self.assertLessEqual(np.abs(buffer).max(), 1.0)
+        # no onset ramp: the first 2 ms are as loud as the whole burst
+        first_2ms_rms = np.sqrt(np.mean(buffer[:96, 0] ** 2))
+        overall_rms = np.sqrt(np.mean(buffer[:, 0] ** 2))
+        self.assertGreater(first_2ms_rms, 0.8 * overall_rms)
+        np.testing.assert_array_equal(buffer, white_noise_buffer(0.1, 48000, seed=0))
 
 
 if __name__ == "__main__":

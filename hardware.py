@@ -1,4 +1,4 @@
-"""LabJack trigger helpers for 8-bit event codes on FIO0-FIO7.
+"""LabJack trigger helpers for 8-bit event codes on FIO0-FIO7, eye tracker, and US playback.
 """
 
 from __future__ import annotations
@@ -9,7 +9,11 @@ import queue
 import threading
 import time
 
+import numpy as np
+
 from config import (
+    audio_device_name,
+    audio_sample_rate_hz,
     eyetracker_gaze_output_hz,
     eyetracker_serial,
     frame_marker_code,
@@ -22,6 +26,9 @@ from config import (
     stimulus_offset_code,
     trigger_min_gap_s,
     trigger_pulse_width_s,
+    us_duration_s,
+    us_noise_seed,
+    us_volume,
 )
 
 # gaze x/y: Tobii display-area coordinates (0-1, origin top-left)
@@ -395,6 +402,79 @@ class SimulatedTobiiEyeTracker(TobiiEyeTracker):
         return
 
 
+class UnconditionedStimulus:
+    """White-noise burst US with abrupt onset, played through PsychoPy's PTB backend."""
+
+    def __init__(
+        self,
+        duration_s=us_duration_s,
+        sample_rate_hz=audio_sample_rate_hz,
+        volume=us_volume,
+        device_name=audio_device_name,
+        noise_seed=us_noise_seed,
+    ):
+        self.duration_s = duration_s
+        self.sample_rate_hz = sample_rate_hz
+        self.volume = volume
+        self.device_name = device_name
+        self.noise_seed = noise_seed
+        self.sound = None
+        self.info = None
+
+    def open(self):
+        if self.sound is not None:
+            return
+
+        # prefs only take effect if psychopy.sound has not been imported yet
+        from psychopy import prefs
+        prefs.hardware["audioLib"] = ["ptb"]
+        prefs.hardware["audioLatencyMode"] = 3  # aggressive low latency
+        if self.device_name:
+            prefs.hardware["audioDevice"] = self.device_name
+        from psychopy import sound
+
+        if sound.audioLib != "ptb":
+            raise RuntimeError(f"US needs the PTB audio backend for flip-scheduled onsets, got {sound.audioLib}.")
+
+        self.sound = sound.Sound(
+            value=white_noise_buffer(self.duration_s, self.sample_rate_hz, self.noise_seed),
+            sampleRate=self.sample_rate_hz,
+            stereo=True,
+            hamming=False,  # PsychoPy ramps on/off by default; the US starts abruptly
+            volume=self.volume,
+        )
+        self.info = {
+            "audio_lib": sound.audioLib,
+            "audio_device_name": self.device_name or "system default",
+            "audio_sample_rate_hz": self.sample_rate_hz,
+            "audio_latency_mode": 3,
+        }
+        logging.info("US opened: %s", self.info)
+
+    def play_on_next_flip(self, win):
+        """Schedule the burst for the next flip; call just before win.flip()."""
+        self.sound.play(when=win.getFutureFlipTime(clock="ptb"))
+
+    def close(self):
+        if self.sound is not None:
+            self.sound.stop()
+        self.sound = None
+
+
+class SimulatedUnconditionedStimulus(UnconditionedStimulus):
+    """Drop-in US for testing without audio hardware; logs instead of playing."""
+
+    def open(self):
+        self.info = {"audio_lib": "simulated", "audio_sample_rate_hz": self.sample_rate_hz}
+        logging.info("Simulated US opened")
+
+    def play_on_next_flip(self, win):
+        logging.info("Simulated US onset scheduled t=%s", time.perf_counter())
+
+    def close(self):
+        return
+
+
 def log_trigger_settings(
     pulse_width_s=trigger_pulse_width_s,
     min_gap_s=trigger_min_gap_s,
@@ -479,6 +559,13 @@ def gaze_sample_to_row(sample):
         row.extend(sample[f"{eye}_gaze_origin_in_user_coordinate_system"])
         row.append(sample[f"{eye}_gaze_origin_validity"])
     return row
+
+
+def white_noise_buffer(duration_s, sample_rate_hz, seed):
+    """Uniform white noise in [-1, 1], identical on both channels, with no onset or offset ramp."""
+    rng = np.random.default_rng(seed)
+    samples = rng.uniform(-1.0, 1.0, round(duration_s * sample_rate_hz))
+    return np.column_stack([samples, samples])
 
 
 def append_rows_tsv(path, columns, rows):

@@ -23,6 +23,9 @@ _required_local_settings = (
     "display_gamma",
     "simulate_eyetracker",
     "eyetracker_serial",
+    "simulate_audio",
+    "audio_device_name",
+    "audio_sample_rate_hz",
 )
 _missing_local_settings = [
     name for name in _required_local_settings if name not in globals()
@@ -101,7 +104,7 @@ photocell_box_pos_deg = (27, -15.0)
 
 # --- trials ---
 trial_duration_s = 10.6667
-iti_duration_s = 2
+iti_duration_s = 7
 
 task_instruction_text = (
     "Maintain fixation on the white cross in the center of the screen.\n\n"
@@ -182,15 +185,24 @@ assert frame_marker_interval % frames_per_reversal(refresh_hz, surround_flicker_
 # --- eye tracker ---
 eyetracker_gaze_output_hz = 60  # must match Frequency set in Eye Tracker Manager
 
+# --- fear conditioning ---
+cs_orientations = [45, 135]  # CS+ drawn at random from these at the start of each session
+us_reinforced_trials_per_condition = 10  # exact count in each CS+ condition, out of trials_per_condition
+us_max_consecutive_nonreinforced = 2  # counted along CS+ trials only, skipping CS- trials
+us_duration_s = 0.1
+us_volume = 1.0  # PsychoPy volume (0-1); fix this and the OS volume when calibrating to 90 dB
+us_noise_seed = 0  # same white-noise samples every session
+
 # --- event codes ---
-# one bit per code so overlapping events stay decodable on FIO0-FIO7
-frame_marker_code = 64
-stimulus_offset_code = 128
+# conditions use values 1-6 on FIO0-FIO2; the codes below take one bit each so they stay decodable when combined
+frame_marker_code = 8
+stimulus_offset_code = 16
+us_onset_code = 32  # sent with stimulus_offset_code on the same flip (16 + 32 = 48)
 condition_event_code_rows = [
-    {"condition_id": 1, "event_code": 1,  "center_orientation": 45,  "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0},
+    {"condition_id": 1, "event_code": 1,  "center_orientation": 45,  "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0.0},
     {"condition_id": 2, "event_code": 2,  "center_orientation": 45,  "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 1.0},
-    {"condition_id": 3, "event_code": 4,  "center_orientation": 45,  "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 1.0},
- #   {"condition_id": 4, "event_code": 8,  "center_orientation": 45, "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0.50},
-  #  {"condition_id": 5, "event_code": 16, "center_orientation": 45, "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 0.50},
-   # {"condition_id": 6, "event_code": 32, "center_orientation": 45, "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 0.50},
+    {"condition_id": 3, "event_code": 3,  "center_orientation": 45,  "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 1.0},
+    {"condition_id": 4, "event_code": 4,  "center_orientation": 135, "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0.0},
+    {"condition_id": 5, "event_code": 5, "center_orientation": 135, "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 1.0},
+    {"condition_id": 6, "event_code": 6, "center_orientation": 135, "surround_orientation": 135,  "center_contrast": 0.1, "surround_contrast": 1.0},
 ]
