@@ -1,13 +1,10 @@
 from collections import Counter
-import math
 import random
 
 from config import (
-    block_definitions,
     condition_event_code_rows,
     trial_duration_s,
     us_max_consecutive_nonreinforced,
-    us_reinforced_trials_per_condition,
 )
 from task import sample_trial_task
 
@@ -93,56 +90,37 @@ def build_condition_order(condition_counts, max_consecutive):
     return ordered_condition_ids
 
 
-def generate_block_trials(
-    block_definition,
+def generate_phase_trials(
+    phase_definition,
     refresh_hz,
     cs_plus_orientation,
     shuffle=True,
 ):
-    block_trials = []
+    phase_trials = []
 
     for condition_row in condition_event_code_rows:
-        for _ in range(block_definition["trials_per_condition"]):
+        for _ in range(phase_definition["trials_per_condition"]):
             trial = build_base_trial(condition_row, refresh_hz, cs_plus_orientation)
-            trial["block_name"] = block_definition["block_name"]
-            block_trials.append(trial)
+            trial["phase_name"] = phase_definition["phase_name"]
+            phase_trials.append(trial)
 
     if shuffle:
-        block_trials = shuffle_with_condition_run_limit(block_trials)
+        phase_trials = shuffle_with_condition_run_limit(phase_trials)
 
-    assign_reinforcement(
-        block_trials,
-        reinforced_per_condition=us_reinforced_trials_per_condition,
-        max_consecutive_nonreinforced=us_max_consecutive_nonreinforced,
-    )
-    return block_trials
-
-
-def generate_trials(
-    refresh_hz,
-    cs_plus_orientation,
-    shuffle=True,
-):
-    trials = []
-
-    for block_definition in block_definitions:
-        trials.extend(
-            generate_block_trials(
-                block_definition=block_definition,
-                refresh_hz=refresh_hz,
-                cs_plus_orientation=cs_plus_orientation,
-                shuffle=shuffle,
-            )
+    if phase_definition["reinforced_per_condition"] > 0:
+        assign_reinforcement(
+            phase_trials,
+            reinforced_per_condition=phase_definition["reinforced_per_condition"],
+            max_consecutive_nonreinforced=us_max_consecutive_nonreinforced,
         )
-
-    return trials
+    return phase_trials
 
 
 def assign_reinforcement(trials, reinforced_per_condition, max_consecutive_nonreinforced):
     """Set "reinforced" in place on exactly reinforced_per_condition trials of each CS+ condition.
 
-    Along the CS+ trial sequence (CS- trials skipped) the first trial is reinforced and
-    no more than max_consecutive_nonreinforced trials in a row are unreinforced.
+    Along the CS+ trial sequence (CS- trials skipped) no more than
+    max_consecutive_nonreinforced trials in a row are unreinforced.
     """
     cs_plus_trials = [trial for trial in trials if trial["cs_type"] == "cs_plus"]
     trial_counts = Counter(trial["condition_id"] for trial in cs_plus_trials)
@@ -166,8 +144,7 @@ def assign_reinforcement(trials, reinforced_per_condition, max_consecutive_nonre
             if reinforced and reinforced_left[condition_id] == 0:
                 continue
             if not reinforced and (
-                not decisions
-                or nonreinforced_run == max_consecutive_nonreinforced
+                nonreinforced_run == max_consecutive_nonreinforced
                 or reinforced_left[condition_id] == trials_left[condition_id]
             ):
                 continue
@@ -198,18 +175,20 @@ def assign_reinforcement(trials, reinforced_per_condition, max_consecutive_nonre
 
 
 def check_reinforcement_is_feasible(trial_counts, reinforced_per_condition, max_consecutive_nonreinforced):
-    reinforced_total = reinforced_per_condition * len(trial_counts)
-    unreinforced_total = sum(trial_counts.values()) - reinforced_total
-    # first CS+ trial is reinforced, so each unreinforced run follows a reinforced trial
-    if (
-        reinforced_per_condition < 1
-        or any(reinforced_per_condition > count for count in trial_counts.values())
-        or unreinforced_total > max_consecutive_nonreinforced * reinforced_total
-    ):
+    def is_feasible(reinforced_count):
+        reinforced_total = reinforced_count * len(trial_counts)
+        unreinforced_total = sum(trial_counts.values()) - reinforced_total
+        # unreinforced runs fit before, between and after the reinforced trials
+        return (
+            all(reinforced_count <= count for count in trial_counts.values())
+            and unreinforced_total <= max_consecutive_nonreinforced * (reinforced_total + 1)
+        )
+
+    if not is_feasible(reinforced_per_condition):
         trials_per_condition = max(trial_counts.values())
-        minimum = math.ceil(trials_per_condition / (max_consecutive_nonreinforced + 1))
+        minimum = next(count for count in range(trials_per_condition + 1) if is_feasible(count))
         raise ValueError(
-            f"us_reinforced_trials_per_condition = {reinforced_per_condition} is infeasible with "
+            f"reinforced_per_condition = {reinforced_per_condition} is infeasible with "
             f"{trials_per_condition} trials per condition and us_max_consecutive_nonreinforced = "
             f"{max_consecutive_nonreinforced}; it must be between {minimum} and {trials_per_condition}."
         )

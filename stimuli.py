@@ -12,8 +12,12 @@ from config import (
     condition_event_code_rows,
     display_gamma,
     frames_per_reversal,
+    orientation_report_prompt_text,
     photocell_box_pos_deg,
     photocell_box_size_deg,
+    probe_outline_diameter_deg,
+    probe_outline_line_width_px,
+    probe_outline_luminance,
     quest_configs,
     raised_cos_fringe,
     raised_cos_fringe_params,
@@ -189,6 +193,39 @@ def make_stimuli(win):
         for contrast in surround_contrasts
     }
 
+    # practice only: faint rings marking where targets can appear
+    outline_rgb = luminance_to_rgb(probe_outline_luminance)
+    probe_outlines = [
+        visual.Circle(
+            win=win,
+            radius=probe_outline_diameter_deg / 2,
+            edges=128,
+            lineColor=(outline_rgb, outline_rgb, outline_rgb),
+            lineWidth=probe_outline_line_width_px,
+            fillColor=None,
+            pos=center_positions_deg[center_index],
+            autoLog=False,
+        )
+        for center_index in task_center_indices
+    ]
+
+    orientation_prompt = visual.TextStim(
+        win=win,
+        text=orientation_report_prompt_text,
+        pos=(0, 0),
+        height=1.0,
+        color="white",
+        autoLog=False,
+    )
+    orientation_feedback = visual.TextStim(
+        win=win,
+        text="",
+        pos=(0, 0),
+        height=1.0,
+        color="white",
+        autoLog=False,
+    )
+
     photocell_box = GratingStim(
         win=win,
         tex=None,  # pyright: ignore
@@ -206,6 +243,9 @@ def make_stimuli(win):
         "centers": centers,
         "center_holes": center_holes,
         "surround": surround,
+        "probe_outlines": probe_outlines,
+        "orientation_prompt": orientation_prompt,
+        "orientation_feedback": orientation_feedback,
         "photocell_box": photocell_box,
     }
 
@@ -233,6 +273,7 @@ def draw_stimulus(
     task_center_indices=(),
     target_index=None,
     target_contrast=None,
+    show_probe_outlines=False,
 ):
     center_phase = phase_reversal(frame_num, refresh_hz, center_flicker_hz)
     stims["photocell_box"].contrast = flicker_indicator_contrast_from_phase(center_phase)
@@ -257,6 +298,10 @@ def draw_stimulus(
 
     for center in centers_to_draw:
         center.draw()
+
+    if show_probe_outlines:
+        for outline in stims["probe_outlines"]:
+            outline.draw()
 
     if calibration_mode:
         stims["photocell_box"].draw()

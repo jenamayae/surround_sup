@@ -33,10 +33,16 @@ from config import (
     frame_marker_code,
     frame_marker_interval,
     fullscreen,
-    iti_duration_s,
     monitor_name,
     monitor_pixels,
     monitor_width_cm,
+    orientation_feedback_duration_s,
+    orientation_report_keys,
+    orientation_report_onset_code,
+    orientation_report_response_code,
+    phase_definitions,
+    practice_continue_keys,
+    practice_continue_text,
     quest_configs,
     quest_group_for_condition,
     refresh_hz,
@@ -48,13 +54,11 @@ from config import (
     surround_diameter_deg,
     surround_flicker_hz,
     surround_sf,
-    task_instruction_text,
     trial_duration_s,
     us_duration_s,
     us_max_consecutive_nonreinforced,
     us_noise_seed,
     us_onset_code,
-    us_reinforced_trials_per_condition,
     us_volume,
     viewing_distance_cm,
 )
@@ -83,7 +87,7 @@ from task import (
     response_key_to_quadrant,
     score_quadrant_response,
 )
-from trials import generate_trials
+from trials import generate_phase_trials
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -117,7 +121,11 @@ def setup_display():
         monitor_width_cm=monitor_width_cm,
         viewing_distance_cm=viewing_distance_cm,
     )
-    check_hardware_gamma_ramp_is_identity(win)
+    # the ramp check uses the Windows GDI API; other platforms are for testing only
+    if sys.platform == "win32":
+        check_hardware_gamma_ramp_is_identity(win)
+    else:
+        logging.warning("Hardware gamma ramp check skipped: not on Windows (%s).", sys.platform)
     measured_refresh_hz = win.getActualFrameRate()
     if measured_refresh_hz is None or abs(measured_refresh_hz - refresh_hz) > 1:
         raise RuntimeError(
@@ -226,7 +234,6 @@ def make_session_info(
         },
         "trial configs": {
             "trial_duration_s": trial_duration_s,
-            "iti_duration_s": iti_duration_s,
             "contrast_task_eligible_eccentricities": contrast_task_eligible_eccentricities,
             "contrast_change_start_s": contrast_change_start_s,
             "contrast_change_interval_s": contrast_change_interval_s,
@@ -235,13 +242,21 @@ def make_session_info(
             "center_change_duration_aligned_s": center_change_duration_aligned_s(),
             "fixation_red_duration_s": fixation_red_duration_s,
         },
+        "phases": {
+            "phase_definitions": [
+                {key: value for key, value in phase.items() if key != "instruction_pages"}
+                for phase in phase_definitions
+            ],
+            "orientation_report_keys": orientation_report_keys,
+            "orientation_feedback_duration_s": orientation_feedback_duration_s,
+            "orientation_report": "untimed; feedback starts on the flip after the keypress",
+        },
         "fear conditioning": {
             "cs_plus_orientation": cs_plus_orientation,
             "cs_minus_orientation": next(
                 orientation for orientation in cs_orientations if orientation != cs_plus_orientation
             ),
             "cs_plus_assignment": "random per session",
-            "us_reinforced_trials_per_condition": us_reinforced_trials_per_condition,
             "us_max_consecutive_nonreinforced": us_max_consecutive_nonreinforced,
             "us_onset": "scheduled for the first ITI flip (stimulus offset)",
             "us_stimulus": "uniform white noise, abrupt onset and offset",
@@ -270,6 +285,7 @@ def make_session_info(
             "viewing_distance_cm": viewing_distance_cm,
             "refresh_hz": refresh_hz,
             "gamma_correction": "software gamma correction, hardware ramp identity",
+            "gamma_ramp_check": "verified identity" if sys.platform == "win32" else "skipped (not Windows)",
             "gl_vendor": gl_vendor,
             "grating_texture_precision": grating_texture_precision(gl_vendor, sys.platform),
             "config_local": {
@@ -301,6 +317,9 @@ def make_session_info(
             "frame_marker_code": frame_marker_code,
             "us_onset_code": us_onset_code,
             "us_onset_trigger": "stimulus_offset_code + us_onset_code on the same flip",
+            "orientation_report_onset_code": orientation_report_onset_code,
+            "orientation_report_response_code": orientation_report_response_code,
+            "practice": "no triggers or eye-tracker events",
             "frame_marker_interval": frame_marker_interval,
             "trigger_pulse": "set on flip, cleared on next flip (1 frame)",
         },
@@ -555,6 +574,7 @@ def run_trial(
     trigger=None,
     trial_num=None,
     eyetracker=None,
+    show_probe_outlines=False,
 ):
     n_frames = round(trial_duration_s * refresh_hz)
     trial_events = build_trial_events(trial, n_frames, refresh_hz)
@@ -632,6 +652,7 @@ def run_trial(
             target_contrast=(
                 None if active_event is None else active_event["target_contrast"]
             ),
+            show_probe_outlines=show_probe_outlines,
         )
 
         code = None
@@ -718,6 +739,15 @@ def run_iti(
         handle_runtime_keys(win)
 
 
+def run_fixation(win, stims, duration_s, refresh_hz):
+    """Fixation cross only; no triggers or photocell marker."""
+    for _ in range(round(duration_s * refresh_hz)):
+        stims["fixation"].color = "white"
+        stims["fixation"].draw()
+        win.flip()
+        handle_runtime_keys(win)
+
+
 def log_trial(
     exp,
     trial_num,
@@ -725,12 +755,13 @@ def log_trial(
     events,
     quest_estimated_threshold,
     dropped_frame_count,
+    orientation_report=None,
 ):
     surround_present = trial["surround_orientation"] is not None
 
     row = {
         "trial_num": trial_num,
-        "block_name": trial["block_name"],
+        "phase_name": trial["phase_name"],
         "condition_id": trial["condition_id"],
         "center_orientation": trial["center_orientation"],
         "center_contrast": trial["center_contrast"],
@@ -750,83 +781,227 @@ def log_trial(
         ),
         "quest_estimated_threshold": quest_estimated_threshold,
         "dropped_frame_count": dropped_frame_count,
+        "reported_orientation": "N/A",
+        "orientation_correct": "N/A",
+        "orientation_rt_s": "N/A",
     }
+    if orientation_report is not None:
+        row.update(orientation_report)
 
     for key, value in row.items():
         exp.addData(key, value)
     exp.nextEntry()
 
 
-def show_block_transition(win, block_name):
-    if block_name == "ssvep_task":
-        show_message(win, task_instruction_text)
+def show_phase_instructions(win, instruction_pages):
+    for page_text in instruction_pages:
+        show_message(win, page_text)
 
 
-def run_experiment_trials(
+def get_orientation_report_key(prompt_clock):
+    key_list = list(orientation_report_keys)
+    key_list.extend(f"num_{key}" for key in orientation_report_keys)
+    keys = event.getKeys(keyList=key_list, timeStamped=prompt_clock)
+    if not keys:
+        return None
+    return keys[0]
+
+
+def run_orientation_report(win, stims, trial, trigger=None, eyetracker=None, trial_num=None):
+    """Show the orientation prompt until a report key is pressed; returns the report fields."""
+    event.clearEvents(eventType="keyboard")
+    prompt_clock = core.Clock()  # reset on the prompt's first flip, so key times are RTs
+    frame_index = 0
+    trigger_is_high = False
+
+    while True:
+        stims["orientation_prompt"].draw()
+        if frame_index == 0:
+            win.callOnFlip(prompt_clock.reset)
+            if trigger is not None:
+                win.callOnFlip(trigger.send_code, orientation_report_onset_code)
+                trigger_is_high = True
+            if eyetracker is not None:
+                win.callOnFlip(
+                    eyetracker.mark_event, "orientation_report_onset", orientation_report_onset_code, trial_num, frame_index
+                )
+        elif trigger_is_high:
+            win.callOnFlip(trigger.send_code, 0)
+            trigger_is_high = False
+        win.flip()
+        frame_index += 1
+
+        response = get_orientation_report_key(prompt_clock)
+        if response is not None:
+            break
+        handle_runtime_keys(win)
+
+    if trigger is not None and trigger_is_high:
+        trigger.send_code(0)
+
+    response_key, orientation_rt_s = response
+    reported_orientation = orientation_report_keys[response_key.removeprefix("num_")]
+    return {
+        "reported_orientation": reported_orientation,
+        "orientation_correct": reported_orientation == trial["center_orientation"],
+        "orientation_rt_s": orientation_rt_s,
+    }
+
+
+def show_orientation_feedback(win, stims, refresh_hz, orientation_correct, trigger=None, eyetracker=None, trial_num=None):
+    n_frames = round(orientation_feedback_duration_s * refresh_hz)
+    stims["orientation_feedback"].text = "Correct" if orientation_correct else "Incorrect"
+
+    for frame_index in range(n_frames):
+        stims["orientation_feedback"].draw()
+        if trigger is not None and frame_index == 0:
+            win.callOnFlip(trigger.send_code, orientation_report_response_code)
+        elif trigger is not None and frame_index == 1:
+            win.callOnFlip(trigger.send_code, 0)
+        if eyetracker is not None and frame_index == 0:
+            win.callOnFlip(
+                eyetracker.mark_event, "orientation_report_response", orientation_report_response_code, trial_num, frame_index
+            )
+        win.flip()
+        handle_runtime_keys(win)
+
+
+def show_practice_continue_screen(win):
+    key = show_message(win, practice_continue_text, key_list=[*practice_continue_keys, "escape"])
+    return practice_continue_keys[key]
+
+
+def run_phase(
+    win,
+    stims,
+    exp,
+    refresh_hz,
+    phase_definition,
+    cs_plus_orientation,
+    quest_controllers,
+    trigger,
+    eyetracker,
+    us,
+    run_paths,
+    frame_interval_log,
+    trial_num,
+):
+    """Run one phase's trials; returns the last trial_num so numbering continues across phases."""
+    phase_trigger = trigger if phase_definition["record"] else None
+    phase_eyetracker = eyetracker if phase_definition["record"] else None
+
+    while True:
+        trials = generate_phase_trials(
+            phase_definition,
+            refresh_hz=refresh_hz,
+            cs_plus_orientation=cs_plus_orientation,
+        )
+        for trial in trials:
+            trial_num += 1
+            quest_controller = quest_controllers[trial["condition_id"]]
+            win.frameIntervals = []
+            trial_events = run_trial(
+                win=win,
+                stims=stims,
+                trial=trial,
+                trial_duration_s=trial_duration_s,
+                refresh_hz=refresh_hz,
+                quest_controller=quest_controller,
+                trigger=phase_trigger,
+                trial_num=trial_num,
+                eyetracker=phase_eyetracker,
+                show_probe_outlines=phase_definition["show_probe_outlines"],
+            )
+            intervals = list(win.frameIntervals)
+            # index 0 spans the pre-trial gap (previous flip to frame 0), so it is not counted
+            dropped = [
+                i for i, dt in enumerate(intervals) if i >= 1 and dt > 1.5 / refresh_hz
+            ]
+            frame_interval_log[str(trial_num)] = {
+                "phase_name": trial["phase_name"],
+                "intervals_s": intervals,
+                "dropped_frame_indices": dropped,
+            }
+            run_iti(
+                win=win,
+                stims=stims,
+                iti_duration_s=phase_definition["iti_duration_s"],
+                refresh_hz=refresh_hz,
+                trigger=phase_trigger,
+                eyetracker=phase_eyetracker,
+                run_paths=run_paths,
+                trial_num=trial_num,
+                us=us,
+                reinforced=trial["reinforced"],
+            )
+
+            orientation_report = None
+            if phase_definition["orientation_report"]:
+                orientation_report = run_orientation_report(
+                    win, stims, trial, trigger=phase_trigger, eyetracker=phase_eyetracker, trial_num=trial_num
+                )
+                show_orientation_feedback(
+                    win,
+                    stims,
+                    refresh_hz,
+                    orientation_report["orientation_correct"],
+                    trigger=phase_trigger,
+                    eyetracker=phase_eyetracker,
+                    trial_num=trial_num,
+                )
+                if phase_definition["post_feedback_fixation_s"] > 0:
+                    run_fixation(win, stims, phase_definition["post_feedback_fixation_s"], refresh_hz)
+
+            log_trial(
+                exp=exp,
+                trial_num=trial_num,
+                trial=trial,
+                events=trial_events,
+                quest_estimated_threshold=quest_controller.estimated_threshold(),
+                dropped_frame_count=len(dropped),
+                orientation_report=orientation_report,
+            )
+
+            if phase_definition["repeat_until_ready"] and show_practice_continue_screen(win) == "ready":
+                return trial_num
+
+        if not phase_definition["repeat_until_ready"]:
+            return trial_num
+
+
+def run_experiment(
     win,
     stims,
     exp,
     refresh_hz,
     trigger,
-    quest_controllers,
+    quest_controller_sets,
     frame_interval_log,
     eyetracker,
     run_paths,
     cs_plus_orientation,
     us,
 ):
-    current_block_name = None
-    trials = generate_trials(refresh_hz=refresh_hz, cs_plus_orientation=cs_plus_orientation)
+    trial_num = 0
     # gc pauses can drop frames; collection runs manually in each ITI instead
     gc.disable()
 
-    for trial_num, trial in enumerate(trials, start=1):
-        if trial["block_name"] != current_block_name:
-            show_block_transition(win, trial["block_name"])
-            current_block_name = trial["block_name"]
-
-        quest_controller = quest_controllers[trial["condition_id"]]
-        win.frameIntervals = []
-        trial_events = run_trial(
+    for phase_definition in phase_definitions:
+        show_phase_instructions(win, phase_definition["instruction_pages"])
+        trial_num = run_phase(
             win=win,
             stims=stims,
-            trial=trial,
-            trial_duration_s=trial_duration_s,
-            refresh_hz=refresh_hz,
-            quest_controller=quest_controller,
-            trigger=trigger,
-            trial_num=trial_num,
-            eyetracker=eyetracker,
-        )
-        intervals = list(win.frameIntervals)
-        # index 0 spans the pre-trial gap (previous flip to frame 0), so it is not counted
-        dropped = [
-            i for i, dt in enumerate(intervals) if i >= 1 and dt > 1.5 / refresh_hz
-        ]
-        frame_interval_log[str(trial_num)] = {
-            "intervals_s": intervals,
-            "dropped_frame_indices": dropped,
-        }
-        run_iti(
-            win=win,
-            stims=stims,
-            iti_duration_s=iti_duration_s,
-            refresh_hz=refresh_hz,
-            trigger=trigger,
-            eyetracker=eyetracker,
-            run_paths=run_paths,
-            trial_num=trial_num,
-            us=us,
-            reinforced=trial["reinforced"],
-        )
-
-        log_trial(
             exp=exp,
+            refresh_hz=refresh_hz,
+            phase_definition=phase_definition,
+            cs_plus_orientation=cs_plus_orientation,
+            quest_controllers=quest_controller_sets[phase_definition["quest_set"]],
+            trigger=trigger,
+            eyetracker=eyetracker,
+            us=us,
+            run_paths=run_paths,
+            frame_interval_log=frame_interval_log,
             trial_num=trial_num,
-            trial=trial,
-            events=trial_events,
-            quest_estimated_threshold=quest_controller.estimated_threshold(),
-            dropped_frame_count=len(dropped),
         )
 
     gc.enable()
@@ -873,8 +1048,12 @@ def main():
     run_paths = prepare_run_paths(exp_info)
     exp = make_experiment_handler(exp_info, run_paths)
     win, stims, refresh_hz = setup_display()
-    quest_controllers = make_quest_controllers()
-    check_quest_contrasts_have_stims(stims, quest_controllers)
+    # practice states are discarded after practice; training and testing share "main"
+    quest_controller_sets = {
+        "practice": make_quest_controllers(),
+        "main": make_quest_controllers(),
+    }
+    check_quest_contrasts_have_stims(stims, quest_controller_sets["main"])
     warm_up_target_gratings(win, stims)
 
     eyetracker_class = SimulatedTobiiEyeTracker if simulate_eyetracker else TobiiEyeTracker
@@ -906,13 +1085,13 @@ def main():
         trigger_backend = trigger_class()
         trigger_backend.open()
 
-        run_experiment_trials(
+        run_experiment(
             win=win,
             stims=stims,
             exp=exp,
             refresh_hz=refresh_hz,
             trigger=trigger_backend,
-            quest_controllers=quest_controllers,
+            quest_controller_sets=quest_controller_sets,
             frame_interval_log=frame_interval_log,
             eyetracker=eyetracker,
             run_paths=run_paths,
@@ -933,7 +1112,7 @@ def main():
         )
         exp.saveAsWideText(str(run_paths["trial_conditions_path"]) + ".csv")
         save_questplus_handlers(
-            quest_controllers=quest_controllers,
+            quest_controllers=quest_controller_sets["main"],
             run_paths=run_paths,
             run_id=exp_info["run"],
         )

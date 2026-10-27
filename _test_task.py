@@ -82,6 +82,7 @@ def install_psychopy_stubs():
     staircase.QuestPlusHandler = DummyQuestPlusHandler
     grating.GratingStim = DummyStim
     visual.TextStim = DummyStim
+    visual.Circle = DummyStim
     visual.Window = DummyStim
     monitors.Monitor = DummyMonitor
     coordinatetools.pol2cart = pol2cart
@@ -116,8 +117,8 @@ import numpy as np
 import main
 import stimuli
 from config import (
-    block_definitions,
     condition_event_code_rows,
+    phase_definitions,
     quest_configs,
     quest_group_for_condition,
 )
@@ -127,7 +128,7 @@ from task import (
     build_event_frame_lists,
     weibull_prob_correct,
 )
-from trials import assign_reinforcement, generate_trials
+from trials import assign_reinforcement, generate_phase_trials
 
 
 class DisplaySetupTests(unittest.TestCase):
@@ -542,6 +543,9 @@ def make_recording_stims(center_count=8, center_contrasts=(0.2, 0.08)):
         ],
         "center_holes": [RecordingStim() for _ in range(center_count)],
         "surround": {1.0: RecordingStim()},
+        "probe_outlines": [RecordingStim() for _ in range(4)],
+        "orientation_prompt": RecordingStim(),
+        "orientation_feedback": RecordingStim(),
         "photocell_box": RecordingStim(),
     }
 
@@ -709,7 +713,7 @@ class TrialLoggingTests(unittest.TestCase):
             def nextEntry(self):
                 self.entry_count += 1
 
-        trial = generate_trials(refresh_hz=120, cs_plus_orientation=45, shuffle=False)[0]
+        trial = generate_phase_trials(phase_by_name("testing"), refresh_hz=120, cs_plus_orientation=45, shuffle=False)[0]
         original_trial = dict(trial)
         events = [
             {
@@ -737,7 +741,8 @@ class TrialLoggingTests(unittest.TestCase):
         )
 
         self.assertEqual(exp.entry_count, 1)
-        self.assertEqual(exp.row["block_name"], "ssvep_task")
+        self.assertEqual(exp.row["phase_name"], "testing")
+        self.assertEqual(exp.row["reported_orientation"], "N/A")
         self.assertEqual(exp.row["condition_id"], trial["condition_id"])
         self.assertEqual(exp.row["contrast_task_outcomes"], "[hit; no_response]")
         self.assertEqual(exp.row["contrast_task_no_response_count"], 1)
@@ -870,25 +875,52 @@ class SessionMetadataTests(unittest.TestCase):
         self.assertEqual(saved_info["quest configs"], session_info["quest configs"])
 
 
-class TrialGenerationTests(unittest.TestCase):
-    def test_single_task_block_has_configured_trials_per_condition(self):
-        trials = generate_trials(refresh_hz=120, cs_plus_orientation=45)
-        trials_per_condition = block_definitions[0]["trials_per_condition"]
-        condition_ids = [row["condition_id"] for row in condition_event_code_rows]
+def phase_by_name(phase_name):
+    return next(phase for phase in phase_definitions if phase["phase_name"] == phase_name)
 
-        self.assertEqual(len(trials), trials_per_condition * len(condition_ids))
+
+class TrialGenerationTests(unittest.TestCase):
+    def test_phases_run_in_order_practice_training_testing(self):
         self.assertEqual(
-            Counter(trial["condition_id"] for trial in trials),
-            {condition_id: trials_per_condition for condition_id in condition_ids},
+            [phase["phase_name"] for phase in phase_definitions], ["practice", "training", "testing"]
         )
-        self.assertEqual({trial["block_name"] for trial in trials}, {"ssvep_task"})
-        self.assertTrue(all("block_index" not in trial for trial in trials))
-        self.assertTrue(all("trial_index_within_block" not in trial for trial in trials))
-        self.assertTrue(all("e_stim_scheduled" not in trial for trial in trials))
-        self.assertTrue(all(
-            len({trial["condition_id"] for trial in trials[index:index + 3]}) > 1
-            for index in range(len(trials) - 2)
-        ))
+
+    def test_each_phase_has_configured_trials_and_reinforcement(self):
+        condition_ids = [row["condition_id"] for row in condition_event_code_rows]
+        expected = {"practice": (1, 0), "training": (3, 3), "testing": (10, 7)}
+        for phase_name, (trials_per_condition, reinforced_per_condition) in expected.items():
+            with self.subTest(phase_name=phase_name):
+                trials = generate_phase_trials(phase_by_name(phase_name), refresh_hz=120, cs_plus_orientation=45)
+
+                self.assertEqual(
+                    Counter(trial["condition_id"] for trial in trials),
+                    {condition_id: trials_per_condition for condition_id in condition_ids},
+                )
+                self.assertEqual({trial["phase_name"] for trial in trials}, {phase_name})
+                self.assertEqual(
+                    sum(trial["reinforced"] for trial in trials),
+                    reinforced_per_condition * 3,  # three CS+ conditions
+                )
+                self.assertTrue(all(
+                    len({trial["condition_id"] for trial in trials[index:index + 3]}) > 1
+                    for index in range(len(trials) - 2)
+                ))
+
+    def test_practice_uses_the_experiment_orientations_and_probe_outlines(self):
+        practice = phase_by_name("practice")
+        trials = generate_phase_trials(practice, refresh_hz=120, cs_plus_orientation=45)
+
+        self.assertEqual({trial["center_orientation"] for trial in trials}, {45, 135})
+        self.assertTrue(practice["show_probe_outlines"])
+        self.assertFalse(practice["record"])
+        self.assertFalse(any(phase["show_probe_outlines"] for phase in phase_definitions[1:]))
+
+    def test_phase_timing_in_frames(self):
+        self.assertEqual(round(phase_by_name("practice")["iti_duration_s"] * 120), 240)
+        self.assertEqual(round(phase_by_name("training")["iti_duration_s"] * 120), 360)
+        self.assertEqual(round(phase_by_name("training")["post_feedback_fixation_s"] * 120), 360)
+        self.assertEqual(round(phase_by_name("testing")["iti_duration_s"] * 120), 840)
+        self.assertEqual(round(main.orientation_feedback_duration_s * 120), 120)
 
 
 class FakeWindow:
@@ -1087,21 +1119,23 @@ def longest_unreinforced_run(cs_plus_trials):
 class ReinforcementScheduleTests(unittest.TestCase):
     def test_cs_type_follows_cs_plus_center_orientation(self):
         for cs_plus_orientation in (45, 135):
-            trials = generate_trials(refresh_hz=120, cs_plus_orientation=cs_plus_orientation)
+            trials = generate_phase_trials(
+                phase_by_name("testing"), refresh_hz=120, cs_plus_orientation=cs_plus_orientation
+            )
             for trial in trials:
                 expected = "cs_plus" if trial["center_orientation"] == cs_plus_orientation else "cs_minus"
                 self.assertEqual(trial["cs_type"], expected)
 
     def test_schedule_meets_counts_and_run_limit_across_seeds(self):
-        reinforced_per_condition = main.us_reinforced_trials_per_condition
+        testing = phase_by_name("testing")
+        reinforced_per_condition = testing["reinforced_per_condition"]
         max_run = main.us_max_consecutive_nonreinforced
         for seed in range(50):
             random.seed(seed)
             for cs_plus_orientation in (45, 135):
-                trials = generate_trials(refresh_hz=120, cs_plus_orientation=cs_plus_orientation)
+                trials = generate_phase_trials(testing, refresh_hz=120, cs_plus_orientation=cs_plus_orientation)
                 cs_plus_trials = cs_plus_sequence(trials)
 
-                self.assertTrue(cs_plus_trials[0]["reinforced"])
                 self.assertLessEqual(longest_unreinforced_run(cs_plus_trials), max_run)
                 self.assertFalse(any(
                     trial["reinforced"] for trial in trials if trial["cs_type"] == "cs_minus"
@@ -1118,25 +1152,33 @@ class ReinforcementScheduleTests(unittest.TestCase):
     def test_run_limit_skips_cs_minus_trials(self):
         # CS- trials between CS+ trials must not reset the unreinforced run
         trials = []
-        for _ in range(6):
+        for _ in range(8):
             trials.append({"condition_id": 1, "cs_type": "cs_plus"})
             trials.append({"condition_id": 4, "cs_type": "cs_minus"})
-        random.seed(0)
-        assign_reinforcement(trials, reinforced_per_condition=2, max_consecutive_nonreinforced=2)
+        for seed in range(50):
+            random.seed(seed)
+            assign_reinforcement(trials, reinforced_per_condition=2, max_consecutive_nonreinforced=2)
+            self.assertLessEqual(longest_unreinforced_run(cs_plus_sequence(trials)), 2)
+            self.assertEqual(sum(trial.get("reinforced", False) for trial in trials), 2)
 
-        self.assertEqual(
-            [trial["reinforced"] for trial in cs_plus_sequence(trials)],
-            [True, False, False, True, False, False],
-        )
+    def test_first_cs_plus_trial_is_not_forced_to_be_reinforced(self):
+        trials = [{"condition_id": 1, "cs_type": "cs_plus"} for _ in range(10)]
+        first_trial_outcomes = set()
+        for seed in range(50):
+            random.seed(seed)
+            assign_reinforcement(trials, reinforced_per_condition=7, max_consecutive_nonreinforced=2)
+            first_trial_outcomes.add(trials[0]["reinforced"])
+        self.assertEqual(first_trial_outcomes, {True, False})
 
     def test_lowest_feasible_count_is_scheduled_and_lower_count_raises(self):
+        # 10 per condition, 3 CS+ conditions, max run 2: 4 reinforced is the minimum (3 leaves 21 unreinforced for 20 slots)
         random.seed(3)
-        trials = generate_trials(refresh_hz=120, cs_plus_orientation=45)
+        trials = generate_phase_trials(phase_by_name("testing"), refresh_hz=120, cs_plus_orientation=45)
         trials_for_minimum = [dict(trial) for trial in trials]
-        assign_reinforcement(trials_for_minimum, reinforced_per_condition=7, max_consecutive_nonreinforced=2)
+        assign_reinforcement(trials_for_minimum, reinforced_per_condition=4, max_consecutive_nonreinforced=2)
         self.assertLessEqual(longest_unreinforced_run(cs_plus_sequence(trials_for_minimum)), 2)
 
-        for infeasible_count in (0, 6, 21):
+        for infeasible_count in (0, 3, 11):
             with self.assertRaises(ValueError):
                 assign_reinforcement(
                     [dict(trial) for trial in trials],
@@ -1171,9 +1213,6 @@ class UnconditionedStimulusTests(unittest.TestCase):
                 reinforced=reinforced,
             )
         return event_log, trigger
-
-    def test_iti_is_840_frames_at_120_hz(self):
-        self.assertEqual(round(main.iti_duration_s * main.refresh_hz), 840)
 
     def test_reinforced_iti_schedules_us_for_the_offset_flip_with_combined_code(self):
         event_log, trigger = self.run_iti_with_us(reinforced=True)
@@ -1220,12 +1259,15 @@ class UnconditionedStimulusTests(unittest.TestCase):
         self.assertEqual(fear_info["cs_plus_orientation"], 135)
         self.assertEqual(fear_info["cs_minus_orientation"], 45)
         self.assertEqual(fear_info["us_duration_s"], main.us_duration_s)
-        self.assertEqual(
-            fear_info["us_reinforced_trials_per_condition"], main.us_reinforced_trials_per_condition
-        )
         self.assertEqual(fear_info["us_audio"], {"audio_lib": "simulated"})
         self.assertEqual(session_info["events"]["us_onset_code"], main.us_onset_code)
-        self.assertEqual(session_info["trial configs"]["iti_duration_s"], 7)
+        self.assertEqual(
+            [phase["phase_name"] for phase in session_info["phases"]["phase_definitions"]],
+            ["practice", "training", "testing"],
+        )
+        self.assertNotIn("instruction_pages", session_info["phases"]["phase_definitions"][0])
+        self.assertEqual(session_info["events"]["orientation_report_onset_code"], 64)
+        self.assertEqual(session_info["events"]["orientation_report_response_code"], 128)
 
     def test_white_noise_buffer_is_stereo_full_scale_without_ramp(self):
         buffer = white_noise_buffer(duration_s=0.1, sample_rate_hz=48000, seed=0)
@@ -1238,6 +1280,186 @@ class UnconditionedStimulusTests(unittest.TestCase):
         overall_rms = np.sqrt(np.mean(buffer[:, 0] ** 2))
         self.assertGreater(first_2ms_rms, 0.8 * overall_rms)
         np.testing.assert_array_equal(buffer, white_noise_buffer(0.1, 48000, seed=0))
+
+
+class FakeClock:
+    def reset(self):
+        return
+
+
+class CallRecorder:
+    """Records patched calls in order as (name, kwargs)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def stub(self, name, return_value=None, side_effect=None):
+        def record(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            if side_effect is not None:
+                return side_effect()
+            return return_value
+        return record
+
+    def names(self):
+        return [name for name, _, _ in self.calls]
+
+    def first(self, name):
+        return next((args, kwargs) for call_name, args, kwargs in self.calls if call_name == name)
+
+
+class OrientationReportTests(unittest.TestCase):
+    def test_report_maps_keys_and_sends_onset_trigger(self):
+        event_log = []
+        win = FakeWindow(event_log=event_log)
+        trigger = FakeTrigger(event_log=event_log)
+        stims = make_recording_stims()
+        key_responses = iter([[], [], [("num_9", 0.42)]])
+
+        with patch.object(main.event, "clearEvents", create=True), patch.object(
+            main.event, "getKeys", side_effect=lambda **kwargs: next(key_responses), create=True
+        ), patch.object(main.core, "Clock", FakeClock, create=True), patch.object(main, "handle_runtime_keys"):
+            report = main.run_orientation_report(win, stims, {"center_orientation": 135}, trigger=trigger)
+
+        self.assertEqual(
+            report, {"reported_orientation": 135, "orientation_correct": True, "orientation_rt_s": 0.42}
+        )
+        self.assertEqual(trigger.codes, [main.orientation_report_onset_code, 0])
+        self.assertEqual(stims["orientation_prompt"].draw_count, 3)
+
+    def test_report_keys_match_tilt_direction(self):
+        # PsychoPy ori is clockwise from vertical: 45 = "/", 135 = "\\"
+        self.assertEqual(main.orientation_report_keys, {"7": 45, "9": 135})
+
+    def test_feedback_lasts_one_second_and_marks_response(self):
+        win = FakeWindow()
+        trigger = FakeTrigger()
+        stims = make_recording_stims()
+
+        with patch.object(main, "handle_runtime_keys"):
+            main.show_orientation_feedback(win, stims, 4, orientation_correct=False, trigger=trigger)
+
+        self.assertEqual(stims["orientation_feedback"].text, "Incorrect")
+        self.assertEqual(stims["orientation_feedback"].draw_count, 4)
+        self.assertEqual(trigger.codes, [main.orientation_report_response_code, 0])
+
+
+class PhaseFlowTests(unittest.TestCase):
+    def run_phase_with_stubs(self, phase_name, trial_count=1, continue_choices=()):
+        recorder = CallRecorder()
+        trial = generate_phase_trials(phase_by_name(phase_name), refresh_hz=120, cs_plus_orientation=45)[0]
+        choices = iter(continue_choices)
+        trigger, eyetracker = object(), object()
+        with patch.object(main, "generate_phase_trials", return_value=[dict(trial) for _ in range(trial_count)]), \
+                patch.object(main, "run_trial", recorder.stub("run_trial", return_value=[])), \
+                patch.object(main, "run_iti", recorder.stub("run_iti")), \
+                patch.object(main, "run_orientation_report", recorder.stub(
+                    "run_orientation_report",
+                    return_value={"reported_orientation": 45, "orientation_correct": True, "orientation_rt_s": 0.5},
+                )), \
+                patch.object(main, "show_orientation_feedback", recorder.stub("show_orientation_feedback")), \
+                patch.object(main, "run_fixation", recorder.stub("run_fixation")), \
+                patch.object(main, "log_trial", recorder.stub("log_trial")), \
+                patch.object(main, "show_practice_continue_screen", recorder.stub(
+                    "show_practice_continue_screen", side_effect=lambda: next(choices)
+                )):
+            last_trial_num = main.run_phase(
+                win=types.SimpleNamespace(frameIntervals=[]),
+                stims={},
+                exp=None,
+                refresh_hz=120,
+                phase_definition=phase_by_name(phase_name),
+                cs_plus_orientation=45,
+                quest_controllers={
+                    row["condition_id"]: types.SimpleNamespace(estimated_threshold=lambda: 0.05)
+                    for row in condition_event_code_rows
+                },
+                trigger=trigger,
+                eyetracker=eyetracker,
+                us=None,
+                run_paths=None,
+                frame_interval_log={},
+                trial_num=10,
+            )
+        return recorder, last_trial_num, trigger, eyetracker
+
+    def test_training_sequence_is_iti_report_feedback_fixation(self):
+        recorder, last_trial_num, trigger, eyetracker = self.run_phase_with_stubs("training")
+
+        self.assertEqual(
+            recorder.names(),
+            ["run_trial", "run_iti", "run_orientation_report", "show_orientation_feedback", "run_fixation", "log_trial"],
+        )
+        self.assertEqual(recorder.first("run_iti")[1]["iti_duration_s"], 3)
+        self.assertIs(recorder.first("run_iti")[1]["trigger"], trigger)
+        self.assertIs(recorder.first("run_trial")[1]["eyetracker"], eyetracker)
+        self.assertEqual(recorder.first("run_fixation")[0][2], 3)
+        self.assertEqual(last_trial_num, 11)
+
+    def test_testing_has_seven_second_iti_and_no_report(self):
+        recorder, _, _, _ = self.run_phase_with_stubs("testing")
+
+        self.assertEqual(recorder.names(), ["run_trial", "run_iti", "log_trial"])
+        self.assertEqual(recorder.first("run_iti")[1]["iti_duration_s"], 7)
+
+    def test_practice_sends_no_triggers_and_ends_when_ready(self):
+        recorder, last_trial_num, _, _ = self.run_phase_with_stubs(
+            "practice", trial_count=2, continue_choices=["keep_practicing", "ready"]
+        )
+
+        self.assertEqual(recorder.names().count("run_trial"), 2)
+        self.assertEqual(recorder.names()[-1], "show_practice_continue_screen")
+        self.assertNotIn("run_fixation", recorder.names())
+        for name in ("run_trial", "run_iti"):
+            self.assertIsNone(recorder.first(name)[1]["trigger"])
+            self.assertIsNone(recorder.first(name)[1]["eyetracker"])
+        self.assertIsNone(recorder.first("run_orientation_report")[1]["trigger"])
+        self.assertTrue(recorder.first("run_trial")[1]["show_probe_outlines"])
+        self.assertEqual(last_trial_num, 12)
+
+    def test_quest_state_is_separate_in_practice_and_shared_into_testing(self):
+        recorder = CallRecorder()
+        quest_controller_sets = {"practice": {"set": "practice"}, "main": {"set": "main"}}
+
+        def fake_run_phase(**kwargs):
+            recorder.calls.append(("run_phase", (), kwargs))
+            return kwargs["trial_num"] + 1
+
+        with patch.object(main, "show_phase_instructions", recorder.stub("show_phase_instructions")), \
+                patch.object(main, "run_phase", side_effect=fake_run_phase):
+            main.run_experiment(
+                win=None, stims={}, exp=None, refresh_hz=120, trigger=None,
+                quest_controller_sets=quest_controller_sets, frame_interval_log={},
+                eyetracker=None, run_paths=None, cs_plus_orientation=45, us=None,
+            )
+
+        phase_calls = [kwargs for name, _, kwargs in recorder.calls if name == "run_phase"]
+        self.assertIs(phase_calls[0]["quest_controllers"], quest_controller_sets["practice"])
+        self.assertIs(phase_calls[1]["quest_controllers"], quest_controller_sets["main"])
+        self.assertIs(phase_calls[2]["quest_controllers"], quest_controller_sets["main"])
+        self.assertEqual([kwargs["trial_num"] for kwargs in phase_calls], [0, 1, 2])
+        instruction_pages = [args[1] for name, args, _ in recorder.calls if name == "show_phase_instructions"]
+        self.assertEqual(
+            instruction_pages,
+            [main.phase_definitions[0]["instruction_pages"], main.phase_definitions[1]["instruction_pages"], []],
+        )
+
+    def test_probe_outlines_are_drawn_only_when_requested(self):
+        for show_probe_outlines in (False, True):
+            stims = make_recording_stims()
+            stimuli.draw_stimulus(
+                stims=stims,
+                frame_num=0,
+                refresh_hz=60,
+                surround_orientation=45,
+                center_contrast=0.2,
+                surround_contrast=1.0,
+                task_center_indices=[4, 5, 6, 7],
+                show_probe_outlines=show_probe_outlines,
+            )
+            self.assertEqual(
+                [outline.draw_count for outline in stims["probe_outlines"]], [int(show_probe_outlines)] * 4
+            )
 
 
 if __name__ == "__main__":

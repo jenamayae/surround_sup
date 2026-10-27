@@ -104,21 +104,77 @@ photocell_box_pos_deg = (27, -15.0)
 
 # --- trials ---
 trial_duration_s = 10.6667
-iti_duration_s = 7
 
-task_instruction_text = (
-    "Maintain fixation on the white cross in the center of the screen.\n\n"
-    "Four locations in the stimulus will remain empty. When a circle briefly "
-    "appears in one of them, press the matching keypad key:\n"
-    "7 = upper left, 9 = upper right, 1 = lower left, 3 = lower right.\n\n"
-    "If you are unsure, simply guess.\n\n"
-    "Press SPACE to begin."
-)
+# --- phases ---
+practice_iti_duration_s = 2
+training_iti_duration_s = 3  # orientation report prompt appears 3 s after stimulus offset
+testing_iti_duration_s = 7
+orientation_feedback_duration_s = 1
+training_post_feedback_fixation_s = 3
 
-block_definitions = [
+practice_instruction_pages = [
+    (
+        "Maintain fixation on the white cross in the center of the screen.\n\n"
+        "Four locations in the stimulus will remain empty. When a circle briefly "
+        "appears in one of them, press the matching keypad key:\n"
+        "7 = upper left, 9 = upper right, 1 = lower left, 3 = lower right.\n\n"
+        "If you are unsure, simply guess.\n\n"
+        "Press SPACE to continue."
+    ),
+    (
+        "After each trial you will be asked which way the center circles were tilted:\n"
+        "7 = /     9 = \\\n\n"
+        "Press SPACE to begin practice."
+    ),
+]
+# placeholder until the wording about the noise is decided
+training_instruction_pages = [
+    "Practice is over. The experiment will now begin.\n\nPress SPACE to begin.",
+]
+
+practice_continue_text = "Press SPACE to keep practicing.\nPress ENTER when you are ready to begin."
+practice_continue_keys = {"space": "keep_practicing", "return": "ready", "num_enter": "ready"}
+
+# quest_set: practice gets its own QUEST+ states, discarded after the phase; training and testing share "main"
+phase_definitions = [
     {
-        "block_name": "ssvep_task",
-        "trials_per_condition": 20,
+        "phase_name": "practice",
+        "trials_per_condition": 1,  # one shuffled batch at a time until the participant is ready
+        "repeat_until_ready": True,
+        "reinforced_per_condition": 0,
+        "iti_duration_s": practice_iti_duration_s,
+        "orientation_report": True,
+        "post_feedback_fixation_s": 0,
+        "record": False,  # no triggers or eye-tracker events
+        "show_probe_outlines": True,
+        "quest_set": "practice",
+        "instruction_pages": practice_instruction_pages,
+    },
+    {
+        "phase_name": "training",
+        "trials_per_condition": 3,
+        "repeat_until_ready": False,
+        "reinforced_per_condition": 3,
+        "iti_duration_s": training_iti_duration_s,
+        "orientation_report": True,
+        "post_feedback_fixation_s": training_post_feedback_fixation_s,
+        "record": True,
+        "show_probe_outlines": False,
+        "quest_set": "main",
+        "instruction_pages": training_instruction_pages,
+    },
+    {
+        "phase_name": "testing",
+        "trials_per_condition": 10,
+        "repeat_until_ready": False,
+        "reinforced_per_condition": 7,
+        "iti_duration_s": testing_iti_duration_s,
+        "orientation_report": False,
+        "post_feedback_fixation_s": 0,
+        "record": True,
+        "show_probe_outlines": False,
+        "quest_set": "main",
+        "instruction_pages": [],  # continues straight on from training
     },
 ]
 
@@ -135,12 +191,19 @@ contrast_response_keys = {
     "lower_left": "1",
     "lower_right": "3",
 }
+orientation_report_keys = {"7": 45, "9": 135}  # 7 = "/", 9 = "\"
+orientation_report_prompt_text = "Which way were the center circles tilted?\n\n7 = /     9 = \\"
+
+# --- practice probe outlines ---
+probe_outline_diameter_deg = 2.5  # inside the gray hole around each task center
+probe_outline_luminance = 0.6  # fraction of white; background is 0.5
+probe_outline_line_width_px = 2
 
 # --- QUEST+ ---
 # intensity = absolute target contrast; each group starts at the top of its own list
-center_only_quest_intensity_vals = np.geomspace(0.01, 0.05, num=20).tolist()
-surround_quest_intensity_vals = np.geomspace(0.02, 0.1, num=20).tolist()
-quest_threshold_vals = np.geomspace(0.01, 0.1, num=25).tolist()
+center_only_quest_intensity_vals = np.geomspace(0.01, 0.10, num=20).tolist()
+surround_quest_intensity_vals = np.geomspace(0.01, 0.20, num=20).tolist()
+quest_threshold_vals = np.geomspace(0.005, 0.25, num=25).tolist()
 
 def build_quest_config(intensity_vals):
     return {
@@ -187,7 +250,6 @@ eyetracker_gaze_output_hz = 60  # must match Frequency set in Eye Tracker Manage
 
 # --- fear conditioning ---
 cs_orientations = [45, 135]  # CS+ drawn at random from these at the start of each session
-us_reinforced_trials_per_condition = 10  # exact count in each CS+ condition, out of trials_per_condition
 us_max_consecutive_nonreinforced = 2  # counted along CS+ trials only, skipping CS- trials
 us_duration_s = 0.1
 us_volume = 1.0  # PsychoPy volume (0-1); fix this and the OS volume when calibrating to 90 dB
@@ -198,6 +260,8 @@ us_noise_seed = 0  # same white-noise samples every session
 frame_marker_code = 8
 stimulus_offset_code = 16
 us_onset_code = 32  # sent with stimulus_offset_code on the same flip (16 + 32 = 48)
+orientation_report_onset_code = 64
+orientation_report_response_code = 128  # sent on the feedback onset flip, within one frame of the keypress
 condition_event_code_rows = [
     {"condition_id": 1, "event_code": 1,  "center_orientation": 45,  "surround_orientation": None, "center_contrast": 0.1, "surround_contrast": 0.0},
     {"condition_id": 2, "event_code": 2,  "center_orientation": 45,  "surround_orientation": 45,   "center_contrast": 0.1, "surround_contrast": 1.0},
